@@ -15,6 +15,10 @@
 #define WING_COMMAND_TIMEOUT_MS 1000U
 #define WING_DIRECTION_CONFLICT_MM 3U
 #define WING_DIRECTION_CONFLICT_SAMPLES 2U
+#define WING_ANTI_PINCH_BACKOFF_MM 20U
+#define WING_ANTI_PINCH_MOVE_TIMEOUT_MS 10000U
+#define WING_ULTRASONIC_ASCEND_SUPPRESS_MIN_MM 5U
+#define WING_ULTRASONIC_SUPPRESS_MAX_MM 70U
 
 typedef enum
 {
@@ -50,6 +54,11 @@ typedef struct
 
 void WingController_Init(void);
 void WingController_Task(uint32_t now);
+/* Main-loop only. A confirmed descent enables protection over the full stroke. */
+void WingController_AntiPinch(uint8_t pressed, uint8_t trigger);
+uint8_t WingController_RejectRemoteStartForUltrasonic(void);
+void WingController_UltrasonicStop(void);
+uint8_t WingController_IsUltrasonicBlocked(void);
 void WingController_OnCanRx(CAN_HandleTypeDef* hcan);
 uint16_t WingController_Request(WingAction action, const char* request_id);
 const WingSnapshot* WingController_GetSnapshot(void);
