@@ -49,11 +49,18 @@ static int direction(void* context, const cJSON* params)
     return cJSON_IsString(action) && (!strcmp(action->valuestring, "ascend") || !strcmp(action->valuestring, "descend"));
 }
 
-static int stopping(void* context, const cJSON* params)
+static int matches_action(void* context, const cJSON* params)
 {
-    const cJSON* action = cJSON_GetObjectItemCaseSensitive(params, "action");
+    const char* action = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(params, "action"));
+    return action && !strcmp(action, (const char*)context);
+}
+
+/* Reserved at the MQTT boundary. Never admit this action to the motion controller. */
+static uint16_t reset_unavailable(void* context, const cJSON* params)
+{
     (void)context;
-    return cJSON_IsString(action) && !strcmp(action->valuestring, "stop");
+    (void)params;
+    return 4002U;
 }
 
 static int power_action(void* context, const cJSON* params)
@@ -64,7 +71,8 @@ static int power_action(void* context, const cJSON* params)
 
 static const ABoxMqttOperation operations[] = {
     {"wing_control", "wing", ABOX_MQTT_COMMAND_DISCRETE_ACTION, ABOX_MQTT_EXPIRY_REQUIRED, 5000U, direction, NULL, NULL},
-    {"wing_control", "wing", ABOX_MQTT_COMMAND_SAFETY_STOP, ABOX_MQTT_EXPIRY_FORBIDDEN, 0U, stopping, NULL, NULL},
+    {"wing_control", "wing", ABOX_MQTT_COMMAND_SAFETY_STOP, ABOX_MQTT_EXPIRY_FORBIDDEN, 0U, matches_action, NULL, "stop"},
+    {"wing_control", "wing", ABOX_MQTT_COMMAND_DISCRETE_ACTION, ABOX_MQTT_EXPIRY_REQUIRED, 5000U, matches_action, reset_unavailable, "reset"},
     {"power_on", "device_power", ABOX_MQTT_COMMAND_DISCRETE_ACTION, ABOX_MQTT_EXPIRY_REQUIRED, 5000U, power_action, NULL, NULL},
     {"power_off", "device_power", ABOX_MQTT_COMMAND_SAFETY_STOP, ABOX_MQTT_EXPIRY_OPTIONAL, 0U, power_action, NULL, NULL}
 };
@@ -265,7 +273,7 @@ void MQTT_V4_HandleRequest(const char* text)
         if (!strcmp(request.command, "power_on")) power = POWER_ON;
         else if (!strcmp(request.command, "power_off")) power = POWER_OFF;
         else if (operation->classification == ABOX_MQTT_COMMAND_SAFETY_STOP) action = WING_ACTION_STOP;
-        else if (operation->classification == ABOX_MQTT_COMMAND_DISCRETE_ACTION)
+        else if (operation->matches == direction)
             action = !strcmp(cJSON_GetObjectItemCaseSensitive(request.params, "action")->valuestring, "ascend") ?
                 WING_ACTION_ASCEND : WING_ACTION_DESCEND;
     }
