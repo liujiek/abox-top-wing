@@ -48,6 +48,10 @@
 #include "abox_stm32_monotonic.h"
 #include "wing_app_service.h"
 #include "wing_controller.h"
+#include "wing_power.h"
+#include "anti_pinch_board.h"
+#include "ultrasonic_board.h"
+#include "mqtt_v4.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -176,6 +180,8 @@ int main(void)
   /* USER CODE BEGIN 2 */
 
     ABoxStm32Monotonic_Init();
+    UltrasonicBoard_Init();
+    AntiPinchBoard_Init();
     ABox_ProductPlatform_Init();
 
     AppLog_Init();
@@ -195,7 +201,7 @@ int main(void)
 
     BoardConfig_Load();
     AppLog_SetLevel((AppLogLevel_t)BoardConfig_Get()->diag_log_level);
-    WingController_Init();
+    if (!WingController_Init()) APP_LOGE("APP", "wing CAN initialization failed");
 
     MQTT_ConfigInit();
 
@@ -215,14 +221,27 @@ int main(void)
     if (!communication_ok)
         APP_LOGE("APP", "communication initialization failed");
 
+    /* Keep PWR12V_OUT2/3 enabled after local initialization, even offline.
+     * PA1/PA2 drive active-high power switches; OUT1 remains alarm-controlled. */
+    WingPower_Init();
+
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
     while (1)
     {
+        if (UltrasonicBoard_TakeTrigger())
+        {
+            MQTT_V4_CancelPendingMotion();
+            WingController_UltrasonicStop();
+        }
+        UltrasonicMonitor_Task(HAL_GetTick());
+        uint8_t pinch_trigger = AntiPinchBoard_TakeTrigger();
+        if (pinch_trigger) MQTT_V4_CancelPendingMotion();
+        WingController_AntiPinch(AntiPinchBoard_IsPressed(), pinch_trigger);
+        WingController_Task(HAL_GetTick());
         WingAppService_Poll(HAL_GetTick());
-        if (!communication_ok) WingController_Task(HAL_GetTick());
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -278,7 +297,8 @@ void SystemClock_Config(void)
 /* USER CODE BEGIN 4 */
 void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef* hcan)
 {
-    WingController_OnCanRx(hcan);
+    if (hcan == &hcan1) UltrasonicBoard_OnCanRx(hcan);
+    else WingController_OnCanRx(hcan);
 }
 
 void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef* huart, uint16_t Size)
@@ -320,6 +340,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
   if (htim->Instance == TIM1)
   {
     HAL_IncTick();
+    AntiPinchBoard_Tick(HAL_GetTick());
   }
   /* USER CODE BEGIN Callback 1 */
 

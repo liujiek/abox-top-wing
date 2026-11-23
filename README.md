@@ -1,6 +1,6 @@
 # A-BOX 顶飞翼固件
 
-产品标识固定为 `top_flying_wing`，本分支默认 App 版本为 `top-flying-wing-1.1.18-st`；V1 对应 `top-flying-wing-1.1.18-gd`。两种硬件分别使用各自的公共冻结 Boot；已有 `dist/` 的实际版本以其清单为准。
+产品标识固定为 `top_flying_wing`，本分支默认 App 版本为 `top-flying-wing-1.1.17-st`；V1 对应 `top-flying-wing-1.1.17-gd`。两种硬件分别使用各自的公共冻结 Boot；已有 `dist/` 的实际版本以其清单为准。
 
 公共组件、完整 Boot 边界和其他产品迁移状态见 `platform/README.md`、`platform/docs/PLATFORM_CONTRACT.md`、`platform/docs/PRODUCT_MATRIX.md`。
 
@@ -19,7 +19,7 @@
 - 内部运维：设备信息、内存日志、受控重启、VID/MQTT 配置和 Boot V2 OTA，只供 OTA 平台使用。
 - 不支持：格口映射、试开通道、锁板、RS485 和旧桌面上位机协议。
 
-V4 接口定义见 [A-BOX 设备公共 MQTT 协议 V4](https://github.com/cxh0416/abox-mqtt-contracts/blob/release/docs/protocols/A-BOX设备公共MQTT协议-V4.0.md) 和 [A-BOX 飞翼设备业务协议 V4](https://github.com/cxh0416/abox-mqtt-contracts/blob/release/docs/protocols/A-BOX飞翼设备业务协议-V4.0.md)，采用单实例 `wing 1.0`，只定义升降、停止、完整状态和位置采样。
+V4 接口定义见 [A-BOX 设备公共 MQTT 协议 V4](https://github.com/cxh0416/abox-mqtt-contracts/blob/release/docs/protocols/A-BOX设备公共MQTT协议-V4.0.md) 和 [A-BOX 飞翼设备业务协议 V4](https://github.com/cxh0416/abox-mqtt-contracts/blob/release/docs/protocols/A-BOX飞翼设备业务协议-V4.0.md)，采用单实例 `wing 1.0` 和 `device_power 1.0`，定义升降、停止、上下电、完整状态和位置采样。
 
 `top-flying-wing-1.1.0` 使用公共 V4；旧 V3 报文和旧控制 Topic 不再作为本构建的业务入口。现有 V3 设备继续按 [飞翼业务 V3](docs/protocols/A-BOX飞翼设备业务协议-V3.0.md) 对接，平台按实际心跳的 `version` 区分。
 
@@ -31,7 +31,7 @@ V4 接口定义见 [A-BOX 设备公共 MQTT 协议 V4](https://github.com/cxh041
 
 ## CAN
 
-默认 CAN2，可通过 CMake 缓存变量 `TOP_WING_CAN_BUS=1|2` 切换。两路均配置为 500 kbps；业务使用 29 位扩展帧、发送 ID `0x1`、接收 ID `0x1`、DLC 8。当前量产控制器采用同 ID 请求/应答，厂家存档说明书中的应答 ID 自动加一规则已经过时；应用层仍会校验 DLC、命令字、状态字段和结果字段。
+飞翼控制器使用 CAN2，CAN1 用于 WL300D；CAN2 固定 500 kbps，CAN1 默认 500 kbps、可构建为 250 kbps；业务使用 29 位扩展帧、发送 ID `0x1`、接收 ID `0x1`、DLC 8。当前量产控制器采用同 ID 请求/应答，厂家存档说明书中的应答 ID 自动加一规则已经过时；应用层仍会校验 DLC、命令字、状态字段和结果字段。
 
 `top-flying-wing-1.1.0` 保留 `remote_only_idle_silent` 会话模式：完全空闲时不轮询控制器；收到上升或下降请求后执行两次 `RD` 停止预检，中间保持 250 ms 静默，再读取 `RL` 限位并启动。远程运行期间才按 100 ms 周期读取反馈，普通位置样本按 200 ms、QoS 0 上报；离散状态、故障和安全停止继续使用 QoS 1。到达目标端点、反馈超时、控制器故障、运行超时或检测到控制冲突时，以单次 `ST` 收口。改变方向前，平台仍必须先明确发送 `stop` 并等待停止确认；空闲时的显式 `stop` 也执行停止确认，取得反馈后才返回成功。
 
@@ -47,7 +47,7 @@ V4 接口定义见 [A-BOX 设备公共 MQTT 协议 V4](https://github.com/cxh041
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\tools\test_host.ps1
-python .\tools\build_paired_release.py --version top-flying-wing-1.1.18-st --candidate build/candidate-pair
+python .\tools\build_paired_release.py --version top-flying-wing-1.1.17-st --candidate build/candidate-pair
 powershell -ExecutionPolicy Bypass -File .\tools\build_release.ps1
 powershell -ExecutionPolicy Bypass -File .\tools\test_v4.ps1 -ServiceRoot D:\work\device-ota-service
 ```

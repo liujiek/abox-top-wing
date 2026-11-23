@@ -28,9 +28,6 @@
 #ifndef WL300D_CAN_BITRATE
 #define WL300D_CAN_BITRATE 500000U
 #endif
-#ifndef WL300D_CAN_BITRATE
-#define WL300D_CAN_BITRATE 500000U
-#endif
 
 static MQTT_CoreConfig_t mqtt_config;
 static Ec800AtCore_t at;

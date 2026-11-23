@@ -46,7 +46,15 @@ set(TOP_WING_CAN_BUS "2" CACHE STRING "Top flying wing CAN port (1 or 2)")
 if(NOT TOP_WING_CAN_BUS MATCHES "^[12]$")
     message(FATAL_ERROR "TOP_WING_CAN_BUS must be 1 or 2")
 endif()
-set(TOP_FLYING_WING_APP_FW_VERSION "top-flying-wing-1.1.20-st" CACHE STRING "Top flying wing App firmware version")
+if(NOT TOP_WING_CAN_BUS STREQUAL "2")
+    message(FATAL_ERROR "CAN1 is reserved for WL300D; wing controller must use CAN2")
+endif()
+set(WL300D_CAN_ID "0x18EC0057" CACHE STRING "WL300D exact 29-bit report ID")
+set(WL300D_CAN_BITRATE "500000" CACHE STRING "WL300D CAN1 bitrate (500000 or 250000)")
+if(NOT WL300D_CAN_BITRATE MATCHES "^(500000|250000)$")
+    message(FATAL_ERROR "WL300D_CAN_BITRATE must be 500000 or 250000")
+endif()
+set(TOP_FLYING_WING_APP_FW_VERSION "top-flying-wing-1.1.19-st" CACHE STRING "Top flying wing App firmware version")
 
 # Enable CMake support for ASM and C languages
 enable_language(C ASM)
@@ -69,12 +77,20 @@ target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
 
 # Add sources to executable
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE
+    Core/User/Src/anti_pinch_alarm.c
+    Core/User/Src/anti_pinch_board.c
+    Core/User/Src/ultrasonic_alarm.c
+    Core/User/Src/ultrasonic_board.c
+    Core/User/Src/ultrasonic_monitor.c
     Core/User/Src/app_log.c
     Core/User/Src/board_config.c
     Core/User/Src/mqtt_app.c
     Core/User/Src/mqtt_app_cmd.c
+    Core/User/Src/mqtt_response.c
     Core/User/Src/mqtt_app_hb.c
     Core/User/Src/mqtt_v4.c
+    Core/User/Src/mqtt_v4_reply.c
+    Core/User/Src/mqtt_v4_report.c
     Core/User/Src/mqtt_v4_store.c
     Core/User/Src/mqtt_v4_persistence.c
     Core/User/Src/mqtt_runtime.c
@@ -88,6 +104,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Core/User/Src/time_base.c
     Core/User/Src/wing_protocol.c
     Core/User/Src/wing_state.c
+    Core/User/Src/wing_power.c
     Core/User/Src/wing_controller.c
 )
 
@@ -101,6 +118,8 @@ target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
 target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE
     TOP_FLYING_WING_BOOT_V2_APP=1
     TOP_WING_CAN_BUS=${TOP_WING_CAN_BUS}
+    WL300D_CAN_ID=${WL300D_CAN_ID}
+    WL300D_CAN_BITRATE=${WL300D_CAN_BITRATE}
     TOP_FLYING_WING_APP_FW_VERSION="${TOP_FLYING_WING_APP_FW_VERSION}"
 )
 
@@ -128,6 +147,7 @@ target_link_libraries(${CMAKE_PROJECT_NAME}
 
 if(TOP_WING_GD32)
     target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE ABOX_UART_ENABLED_MASK=0x01U)
+    target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE TOP_WING_ZHONGTIAN=1)
     if(NOT TOP_FLYING_WING_APP_FW_VERSION MATCHES "-gd$")
         message(FATAL_ERROR "V1 GD32 App version must end in -gd")
     endif()

@@ -1,5 +1,5 @@
 [CmdletBinding()]
-param([string] $FirmwareVersion = 'top-flying-wing-1.1.18-gd')
+param([string] $FirmwareVersion = 'top-flying-wing-1.1.17-gd')
 $ErrorActionPreference = 'Stop'
 if ($FirmwareVersion -notmatch '^top-flying-wing-[0-9]+\.[0-9]+\.[0-9]+-gd$') {
     throw 'Candidate version must end in -gd.'
