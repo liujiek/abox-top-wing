@@ -178,6 +178,7 @@ void MQTT_V4_ReportTask(void)
     {
         if (ready_sequence) ABoxCloudBootstrap_NetworkChanged(&bootstrap);
         ready_sequence = MQTT_Core_GetReadySeq();
+        WingController_LogAutoResetAlarm();
         report_operation = 0U; report_pending = report_is_heartbeat = retry_snapshot = report_power_event = report_sync = 0U;
     }
     ABoxCloudBootstrap_SetReady(&bootstrap, 1);

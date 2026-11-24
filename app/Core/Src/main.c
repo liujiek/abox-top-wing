@@ -231,7 +231,7 @@ int main(void)
   /* USER CODE BEGIN WHILE */
     while (1)
     {
-        if (UltrasonicBoard_TakeTrigger())
+        if (UltrasonicBoard_TakeTrigger() && !WingController_AutoResetActive())
         {
             MQTT_V4_CancelPendingMotion();
             WingController_UltrasonicStop();
@@ -242,6 +242,7 @@ int main(void)
         WingController_AntiPinch(AntiPinchBoard_IsPressed(), pinch_trigger);
         WingController_Task(HAL_GetTick());
         WingAppService_Poll(HAL_GetTick());
+        WingController_AutoResetTask(MQTT_V4_ControlPending() || MQTT_App_MaintenancePending());
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */

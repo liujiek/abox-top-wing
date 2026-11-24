@@ -17,6 +17,7 @@ int main(void)
 {
     assert(!UltrasonicBoard_IsAlarm(0));
     UltrasonicBoard_Init();
+    assert(!UltrasonicBoard_PathConfirmedClear(0));
     count=6;
     for(unsigned i=0;i<count;++i)
     {headers[i]=(CAN_RxHeaderTypeDef){.ExtId=WL300D_CAN_ID,.IDE=CAN_ID_EXT,.DLC=8};memset(payloads[i],0xFF,8);}
@@ -25,6 +26,8 @@ int main(void)
     memset(payloads[4],0xFF,8);
     UltrasonicBoard_OnCanRx(&hcan2);assert(!consumed); /* Preserve CAN2. */
     UltrasonicBoard_OnCanRx(&hcan1);assert(consumed==count && !UltrasonicBoard_IsAlarm(0));
+    assert(UltrasonicBoard_PathConfirmedClear(0));
+    assert(!UltrasonicBoard_PathConfirmedClear(ULTRASONIC_FRESH_MS + 1U));
     UltrasonicDiagnostics diag;
     UltrasonicBoard_CopyDiagnostics(&diag);
     assert(diag.received==6 && diag.accepted==2 && diag.seen && !diag.active);
@@ -33,6 +36,7 @@ int main(void)
     consumed=0;count=1;headers[0]=headers[4];memset(payloads[0],0xFF,8);payloads[0][7]=30;tick=100;
     UltrasonicBoard_OnCanRx(&hcan1);assert(UltrasonicBoard_IsAlarm(101));
     UltrasonicBoard_CopyDiagnostics(&diag);
+    assert(!UltrasonicBoard_PathConfirmedClear(101));
     assert(diag.received==7 && diag.accepted==3 && diag.mask==128 && diag.active);
     assert(diag.last_valid_tick==100 && diag.last_valid_data[7]==30);
     consumed=0;headers[0].IDE=0;headers[0].StdId=0x321;tick=200;

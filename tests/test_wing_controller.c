@@ -26,9 +26,14 @@ void HAL_GPIO_WritePin(void *port, uint16_t pin, uint8_t value)
     assert(port == (void *)1 && pin == ((1U << 1) | (1U << 2)));
     g_power_output = value;
 }
+extern uint8_t test_raw_contact, test_sonar_stale, test_marker_write_fail;
+extern int test_reset_marker;
 extern uint8_t test_ultrasonic_blocked;
+static unsigned reset_errors;
 extern uint8_t test_ultrasonic_suppressed;
 extern uint8_t test_anti_pinch_scope;
+extern uint32_t test_reset_lamp_tick;
+extern uint8_t test_reset_lamp_moving;
 extern unsigned test_ultrasonic_aborts;
 extern unsigned test_ultrasonic_prestart_warnings;
 extern unsigned test_ultrasonic_hold_clears;
@@ -36,7 +41,7 @@ extern uint32_t test_ultrasonic_prestart_tick;
 
 uint32_t HAL_GetTick(void) { return g_tick; }
 void AppLog_Printf(AppLogLevel_t level, const char* tag, const char* fmt, ...)
-{ (void)level; (void)tag; (void)fmt; }
+{ (void)fmt; if (level == APP_LOG_LEVEL_ERROR && !strcmp(tag, "AUTO_RS")) ++reset_errors; }
 
 int HAL_CAN_AddTxMessage(CAN_HandleTypeDef* hcan, CAN_TxHeaderTypeDef* header,
                          uint8_t data[8], uint32_t* mailbox)
@@ -71,6 +76,10 @@ int HAL_CAN_ActivateNotification(CAN_HandleTypeDef* hcan, uint32_t notification)
 
 static void reset_controller(void)
 {
+    test_raw_contact = test_sonar_stale = test_marker_write_fail = 0U;
+    test_reset_marker = 0;
+    test_reset_lamp_tick = test_reset_lamp_moving = 0U;
+    reset_errors = 0U;
     test_ultrasonic_blocked = 0U;
     test_ultrasonic_aborts = 0U;
     test_ultrasonic_prestart_warnings = 0U;
@@ -727,8 +736,298 @@ static void test_ultrasonic_near_retraction_suppression(void)
     assert(WingController_Request(WING_ACTION_ASCEND, "idle-blocked") == 4003U);
 }
 
+static void idle_poll(uint32_t tick, uint8_t pending)
+{
+    g_tick = tick;
+    WingController_Task(tick);
+    WingController_AutoResetTask(pending);
+}
+
+/* Read real wire-format RL and two RD samples, spaced by the quiet interval. */
+static void idle_samples(uint32_t tick, uint16_t bottom, uint16_t top,
+                         uint16_t first, uint16_t second)
+{
+    idle_poll(tick, 0U);
+    limits(top, bottom, tick + 1U);
+    status(first, 0U, tick + 2U);
+    idle_poll(tick + 252U, 0U);
+    status(second, 0U, tick + 253U);
+    idle_poll(tick + 254U, 0U);
+}
+
+static void idle_attempt(uint32_t tick, uint16_t position)
+{
+    idle_samples(tick, 1U, 250U, position, position);
+    status(position, 0U, tick + 255U);
+    idle_poll(tick + 256U, 0U);
+}
+
+static void test_idle_range_recovery(void)
+{
+    const uint8_t rs_ack[8] = {'R', 'S'};
+    const uint16_t positions[] = {0, 1, 3, 4, 250, 251};
+    for (unsigned i = 0; i < sizeof(positions) / sizeof(positions[0]); ++i)
+    {
+        reset_controller();
+        idle_attempt(3000U, positions[i]);
+        unsigned outside = positions[i] == 0 || positions[i] > 250;
+        assert(count_command('R','S') == outside && test_reset_marker == (int)outside);
+    }
+    /* This controller's limits are 10..100, so 9 is also outside. */
+    reset_controller();
+    idle_samples(3000, 10, 100, 9, 9);
+    status(9,0,3255); idle_poll(3256,0);
+    assert(count_command('R','S') == 1 && test_anti_pinch_scope);
+    receive(rs_ack,3257); status(9,1,3258);
+    assert(WingController_Request(WING_ACTION_ASCEND, "busy") == 4003);
+    for (unsigned t = 3358; t <= 3661; t += 101)
+    {
+        idle_poll(t,0); status(10,0,t+1);
+    }
+    assert(count_command('S','T') == 1 && test_reset_marker == 1);
+    ack(WING_ACTION_STOP,3663); status(10,0,3664);
+    assert(reset_errors == 0);
+    idle_samples(6700, 10, 100, 10, 10);
+    assert(test_reset_marker == 0);
+    idle_attempt(10000,251);
+    assert(count_command('R','S') == 2);
+}
+
+static uint16_t check_power_off_position(uint16_t top, uint16_t bottom, uint16_t position,
+                                         uint8_t moving, uint8_t fault)
+{
+    reset_controller();
+    assert(WingController_CheckPowerOff("off") == 0U);
+    status(position, 0U, 1U);
+    WingController_Task(251U);
+    status(position, 0U, 252U);
+    limits(top, bottom, 253U);
+    status_with_fault(position, moving, fault, 254U);
+    assert(WingController_GetSnapshot()->bottom_limit_mm == bottom);
+    return take_result().code;
+}
+
+static void test_retracted_boundaries(void)
+{
+    const uint8_t rs_ack[8] = {'R', 'S'};
+    for (uint16_t bottom = 0; bottom <= 1; ++bottom)
+    {
+        for (uint16_t position = 0; position <= 4; ++position)
+            assert(check_power_off_position(250, bottom, position, 0, 0) ==
+                   (position <= 3 ? 200U : 4003U));
+        assert(check_power_off_position(250, bottom, 0, 1, 0) == 4003U);
+        assert(check_power_off_position(250, bottom, 0, 0, 14) == 5005U);
+
+        reset_controller();
+        idle_samples(3000, bottom, 250, 0, 0);
+        assert(!count_command('R','S'));
+        status(0,0,3255); idle_poll(3256,0);
+        assert(count_command('R','S') == 1 && test_reset_marker);
+
+        reset_controller();
+        start_running_with_limits(WING_ACTION_DESCEND, "down", 5, 250, bottom);
+        WingController_Task(356); status(4,1,357);
+        assert(!count_command('S','T') && WingController_GetSnapshot()->at_endpoint == WING_ENDPOINT_NONE);
+        WingController_Task(458); status(3,1,459);
+        assert(count_command('S','T') == 1 && WingController_GetSnapshot()->at_endpoint == WING_ENDPOINT_BOTTOM);
+    }
+    assert(check_power_off_position(100, 10, 9, 0, 0) == 4003U);
+    assert(check_power_off_position(100, 10, 12, 0, 0) == 200U);
+
+    reset_controller();
+    idle_attempt(3000, 0);
+    assert(count_command('R','S') == 1);
+    receive(rs_ack,3257); status(0,1,3258);
+    for (unsigned t = 3358; t <= 3661; t += 101)
+    {
+        idle_poll(t,0); status(0,0,t+1);
+    }
+    assert(count_command('S','T') == 1 && test_reset_marker);
+    ack(WING_ACTION_STOP,3663); status(0,0,3664);
+    assert(!reset_errors);
+    idle_attempt(6700,0);
+    assert(test_reset_marker && count_command('R','S') == 1);
+    assert(WingController_Init());
+    idle_attempt(10000,0);
+    assert(test_reset_marker && count_command('R','S') == 1);
+    idle_attempt(13500,1);
+    assert(!test_reset_marker);
+    idle_attempt(17000,0);
+    assert(count_command('R','S') == 2);
+}
+
+static void test_idle_reset_interlocks(void)
+{
+    reset_controller();
+    idle_poll(3000,1); assert(g_tx_count == 0);
+    idle_samples(6000,1,250,251,250);
+    assert(!test_reset_marker && !count_command('R','S'));
+    idle_poll(9300,0); limits(250,1,9301); status(251,1,9302);
+    idle_poll(9600,0);
+    assert(!count_command('R','S') && !count_command('S','T'));
+    idle_poll(13000,0); limits(250,1,13001); status(251,0,13002);
+    idle_poll(13252,0); idle_poll(13553,0); status(251,0,13554);
+    assert(!test_reset_marker && !count_command('R','S'));
+    test_raw_contact = 1;
+    idle_attempt(17000,251);
+    test_raw_contact = 0; test_sonar_stale = 1;
+    idle_attempt(20500,251);
+    test_sonar_stale = 0; test_ultrasonic_blocked = 1;
+    idle_attempt(24000,251);
+    assert(!test_reset_marker && !count_command('R','S'));
+    test_ultrasonic_blocked = 0;
+    idle_samples(27500,1,250,251,251);
+    idle_poll(27755,1); /* An earlier queued request wins even after marking. */
+    assert(!count_command('R','S'));
+    idle_attempt(31000,251);
+    assert(count_command('R','S') == 1);
+
+    reset_controller();
+    start_running_with_limits(WING_ACTION_ASCEND,"remote",30,250,1);
+    g_tick = 4000U;
+    WingController_AutoResetTask(0U);
+    assert(count_command('R','L') == 1 && !count_command('R','S'));
+    reset_controller();
+    pinch_start(50,100);
+    g_tick = 4000U;
+    WingController_AutoResetTask(0U);
+    assert(count_command('M','O') == 1 && !count_command('R','S'));
+}
+
+static void test_sonar_during_auto_reset(void)
+{
+    const uint8_t rs_ack[8] = { 'R', 'S' };
+    const uint8_t rs_rejected[8] = { 'R', 'S', 0, 0, 0, 0, 0, 1 };
+
+    reset_controller();
+    idle_samples(3000, 1, 250, 251, 251);
+    assert(test_reset_lamp_tick == 0);
+    status(251,0,3255); idle_poll(3256,0);
+    assert(count_command('R','S') == 1 && WingController_AutoResetActive());
+    assert(test_reset_lamp_moving && test_reset_lamp_tick == 3256 && test_ultrasonic_suppressed);
+    test_ultrasonic_blocked = 1;
+    WingController_UltrasonicStop();
+    idle_poll(3257, 0);
+    assert(!count_command('S','T'));
+    receive(rs_ack,3258);
+    status(0,1,3259);
+    test_sonar_stale = 1;
+    idle_poll(3360,0); status(0,1,3361);
+    assert(test_reset_lamp_moving && test_reset_lamp_tick == 3361);
+    assert(!count_command('S','T') && test_anti_pinch_scope);
+    for (unsigned tick = 3462; tick <= 3765; tick += 101)
+    {
+        idle_poll(tick,0);
+        status(0,0,tick+1);
+        assert(!test_reset_lamp_moving && test_reset_lamp_tick == tick + 1);
+    }
+    assert(count_command('S','T') == 1 && WingController_AutoResetActive());
+    ack(WING_ACTION_STOP,3767);
+    WingController_UltrasonicStop();
+    status(0,1,3768);
+    assert(test_reset_lamp_moving && test_reset_lamp_tick == 3768);
+    assert(WingController_AutoResetActive() && count_command('S','T') == 1);
+    idle_poll(3870,0); status(0,0,3871);
+    assert(!test_reset_lamp_moving && test_reset_lamp_tick == 3871);
+    assert(!WingController_AutoResetActive() && !reset_errors);
+    assert(WingController_Request(WING_ACTION_ASCEND,"obstacle-after-reset") == 4003U);
+    test_ultrasonic_blocked = 0;
+    idle_attempt(7000,1);
+    assert(!test_reset_marker);
+    idle_attempt(10500,251); /* Stale sonar blocks the next RS. */
+    assert(count_command('R','S') == 1);
+    test_sonar_stale = 0;
+    idle_attempt(14000,251);
+    assert(count_command('R','S') == 2);
+
+    test_ultrasonic_blocked = 1;
+    receive(rs_rejected,14257);
+    assert(!test_reset_lamp_moving && test_reset_lamp_tick == 14257);
+    assert(!WingController_AutoResetActive() && reset_errors);
+    assert(WingController_Request(WING_ACTION_ASCEND,"obstacle-after-reject") == 4003U);
+
+    reset_controller();
+    idle_attempt(3000,251);
+    receive(rs_ack,3257);
+    test_ultrasonic_blocked = 1;
+    WingController_AntiPinch(1,1);
+    assert(count_command('S','T') == 1 && !count_command('M','O'));
+    idle_poll(4258,0); /* Missing ST feedback still enters the fault state. */
+    assert(!WingController_AutoResetActive() && reset_errors);
+    assert(WingController_GetSnapshot()->can_session == WING_CAN_SESSION_FAULT);
+    assert(!test_reset_lamp_moving && test_reset_lamp_tick == 4258);
+
+    reset_controller();
+    idle_samples(3000,1,250,0,0);
+    status(0,0,3255); g_fail_tx = 1U; idle_poll(3256,0);
+    assert(!count_command('R','S') && !test_reset_lamp_tick);
+}
+
+static void test_idle_reset_failure_latch(void)
+{
+    reset_controller();
+    test_marker_write_fail = 1;
+    idle_attempt(3000,251);
+    assert(reset_errors && !count_command('R','S'));
+    test_marker_write_fail = 0;
+    idle_attempt(6500,251);
+    assert(count_command('R','S') == 1);
+    idle_poll(7800,0); /* RS ACK never arrived, request a confirmed stop. */
+    assert(count_command('S','T') == 1 && test_reset_marker);
+    ack(WING_ACTION_STOP,7801); status(251,0,7802);
+    idle_attempt(11000,251);
+    assert(count_command('R','S') == 1);
+    assert(WingController_Init()); /* RAM lost; persistent marker retained. */
+    idle_attempt(15000,251);
+    assert(count_command('R','S') == 1 && test_reset_marker);
+    idle_samples(18500,1,250,1,2); /* Moving between samples cannot rearm. */
+    assert(test_reset_marker);
+    idle_samples(22000,1,250,250,250);
+    assert(!test_reset_marker);
+    idle_attempt(25500,251);
+    assert(count_command('R','S') == 2);
+    WingController_AntiPinch(1U,1U);
+    assert(count_command('S','T') == 2 && !count_command('M','O'));
+}
+
+static void test_reset_still_outside(void)
+{
+    const uint8_t rs_ack[8] = {'R','S'};
+    reset_controller();
+    idle_attempt(3000,251);
+    receive(rs_ack,3257); status(251,1,3258);
+    for (unsigned t = 3358; t <= 4368; t += 101)
+    {
+        idle_poll(t,0); status(251,0,t+1);
+    }
+    assert(count_command('S','T') == 1 && reset_errors && test_reset_marker);
+    ack(WING_ACTION_STOP,4370); status(251,0,4371);
+    idle_attempt(7600,251);
+    assert(count_command('R','S') == 1);
+    unsigned errors = reset_errors;
+    WingController_LogAutoResetAlarm();
+    assert(reset_errors == errors + 1);
+    idle_samples(11000,1,250,250,250);
+    errors = reset_errors;
+    WingController_LogAutoResetAlarm();
+    assert(!test_reset_marker && reset_errors == errors);
+
+    reset_controller();
+    idle_poll(3000,0); limits(250,250,3001);
+    assert(!count_command('R','D'));
+    idle_poll(6500,0); limits(250,1,6501); status_with_fault(0,0,14,6502);
+    idle_poll(6752,0); status(0,0,6753); idle_poll(6754,0);
+    assert(!test_reset_marker && !count_command('R','S'));
+}
+
 int main(void)
 {
+    test_reset_still_outside();
+    test_idle_range_recovery();
+    test_retracted_boundaries();
+    test_idle_reset_interlocks();
+    test_sonar_during_auto_reset();
+    test_idle_reset_failure_latch();
     reset_controller();
     g_can_state = HAL_CAN_STATE_RESET;
     assert(!WingController_Init());

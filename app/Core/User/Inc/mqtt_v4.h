@@ -8,6 +8,7 @@
 #include "wing_controller.h"
 /* Cancel durable intentions that have not yet reached the CAN controller. */
 void MQTT_V4_CancelPendingMotion(void);
+uint8_t MQTT_V4_ControlPending(void);
 
 #define MQTT_V4_REQUEST_ID_SIZE 65U
 

@@ -32,6 +32,12 @@ static uint32_t g_ota_response_wait_tick;
 static char g_ota_request_id[65];
 static ResponseTopic g_reset_response_topic;
 
+uint8_t MQTT_App_MaintenancePending(void)
+{
+    return g_ota_request_state != OTA_REQ_IDLE || g_mqtt_app_ota_reset_pending ||
+           OtaService_IsBusy() || MQTT_App_IsMqttConfigTrialActive();
+}
+
 uint8_t MQTT_App_IsOtaResetResponse(const char* topic, const char* request_id, uint16_t code)
 {
     return g_mqtt_app_ota_reset_pending && g_reset_response_topic == RESP_INTERNAL_OTA &&
@@ -181,7 +187,7 @@ static cJSON* device_info(void)
     cJSON_AddNumberToObject(obj, "canBus", TOP_WING_CAN_BUS);
     cJSON_AddNumberToObject(obj, "canBitrate", 500000U);
     cJSON_AddNumberToObject(obj, "feedbackTimeoutMs", WING_ACTIVE_FEEDBACK_TIMEOUT_MS);
-    cJSON_AddStringToObject(obj, "canSessionMode", "remote_only_idle_silent");
+    cJSON_AddStringToObject(obj, "canSessionMode", "idle_limit_monitor");
     return obj;
 }
 
@@ -211,7 +217,7 @@ static void handle_internal_config(const char* request_id, cJSON* params)
     if (strcmp(name, "clear_log") == 0) { AppLog_Clear(); build_response(RESP_INTERNAL_CONFIG, request_id, 200U, WING_ACTION_NONE, 0U, 0); return; }
     if (strcmp(name, "reboot") == 0)
     {
-        if (MQTT_App_IsMqttConfigTrialActive() || g_ota_request_state != OTA_REQ_IDLE || OtaService_IsBusy())
+        if (WingController_AutoResetActive() || MQTT_App_IsMqttConfigTrialActive() || g_ota_request_state != OTA_REQ_IDLE || OtaService_IsBusy())
         { build_response(RESP_INTERNAL_CONFIG, request_id, 4003U, WING_ACTION_NONE, 0U, 0); return; }
         /* OTA owns this ID until its final response has been queued. */
         copy_id(g_ota_request_id, request_id);
@@ -260,7 +266,7 @@ static void handle_ota(const char* request_id, cJSON* params)
     { build_response(RESP_INTERNAL_OTA, request_id, 4001U, WING_ACTION_NONE, 0U, 0); return; }
     if (MQTT_App_IsMqttConfigTrialActive()) { build_response(RESP_INTERNAL_OTA, request_id, 4003U, WING_ACTION_NONE, 0U, 0); return; }
     if (!OtaService_IsReady()) { build_response(RESP_INTERNAL_OTA, request_id, 500U, WING_ACTION_NONE, 0U, 0); return; }
-    if (g_ota_request_state != OTA_REQ_IDLE || OtaService_IsBusy()) { build_response(RESP_INTERNAL_OTA, request_id, 4003U, WING_ACTION_NONE, 0U, 0); return; }
+    if (WingController_AutoResetActive() || g_ota_request_state != OTA_REQ_IDLE || OtaService_IsBusy()) { build_response(RESP_INTERNAL_OTA, request_id, 4003U, WING_ACTION_NONE, 0U, 0); return; }
     snprintf(request.url, sizeof(request.url), "%s", url->valuestring);
     snprintf(request.version, sizeof(request.version), "%s", version->valuestring);
     request.size = (uint32_t)size->valuedouble;

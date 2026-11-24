@@ -3,6 +3,26 @@
 uint8_t test_ultrasonic_blocked;
 uint8_t test_ultrasonic_suppressed;
 uint8_t test_anti_pinch_scope;
+uint32_t test_reset_lamp_tick;
+uint8_t test_reset_lamp_moving;
+void AntiPinchBoard_UpdateResetLamp(uint32_t now, uint8_t moving)
+{
+    test_reset_lamp_tick = now;
+    test_reset_lamp_moving = moving;
+}
+uint8_t test_raw_contact, test_sonar_stale;
+int test_reset_marker;
+uint8_t test_marker_write_fail;
+int OTA_Info_AutoResetLatched(void) { return test_reset_marker; }
+uint8_t OTA_Info_SetAutoResetLatched(uint8_t latched)
+{
+    if (test_marker_write_fail) return 0U;
+    test_reset_marker = latched;
+    return 1U;
+}
+uint8_t AntiPinchBoard_ContactActive(void) { return test_raw_contact; }
+uint8_t UltrasonicBoard_PathConfirmedClear(uint32_t now)
+{ (void)now; return !test_ultrasonic_blocked && !test_sonar_stale; }
 unsigned test_ultrasonic_aborts;
 unsigned test_ultrasonic_prestart_warnings;
 unsigned test_ultrasonic_hold_clears;

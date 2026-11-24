@@ -34,6 +34,8 @@ class PairReleaseTest(unittest.TestCase):
             app = bytearray(struct.pack("<II", 0x20010000, 0x08008009))
             app += b"\x00" * 8 + ("TOP_FLYING_WING_MCU=" + mcu).encode() + b"\x00"
             app += ("TOP_FLYING_WING_FW_VERSION=" + version).encode() + b"\x00"
+            if board == "v2":
+                app += b"idle_limit_monitor\0"
             path = self.directory / (board + "-app.bin")
             path.write_bytes(app)
             pair.create_variant(self.stage, board, path, version, self.sources, "test compiler")

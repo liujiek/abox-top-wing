@@ -26,14 +26,22 @@ static void refresh_motion(WingState* state)
     else s->motion_state = WING_MOTION_MOVING_UNKNOWN;
 }
 
+WingLowerTravel WingState_LowerTravel(uint16_t top_limit_mm, uint16_t bottom_limit_mm)
+{
+    /* The 250 mm drive reports zero when retracted, including units with RL minimum 1. */
+    if (top_limit_mm == 250U && bottom_limit_mm <= 1U)
+        return (WingLowerTravel){ 0U, 3U };
+    return (WingLowerTravel){ bottom_limit_mm, (uint32_t)bottom_limit_mm + WING_ENDPOINT_TOLERANCE_MM };
+}
+
 static void refresh_endpoint(WingState* state)
 {
     WingSnapshot* s = &state->snapshot;
     s->at_endpoint = WING_ENDPOINT_NONE;
     if (!s->have_position || !s->have_limits) return;
-    if ((uint32_t)s->position_mm + WING_ENDPOINT_TOLERANCE_MM >= s->top_limit_mm)
+    if (WingState_EndpointReached(state, WING_ACTION_ASCEND))
         s->at_endpoint = WING_ENDPOINT_TOP;
-    else if ((uint32_t)s->position_mm <= (uint32_t)s->bottom_limit_mm + WING_ENDPOINT_TOLERANCE_MM)
+    else if (WingState_EndpointReached(state, WING_ACTION_DESCEND))
         s->at_endpoint = WING_ENDPOINT_BOTTOM;
 }
 
@@ -102,7 +110,7 @@ uint8_t WingState_EndpointReached(const WingState* state, WingAction action)
     if (action == WING_ACTION_ASCEND)
         return (uint32_t)s->position_mm + WING_ENDPOINT_TOLERANCE_MM >= s->top_limit_mm ? 1U : 0U;
     if (action == WING_ACTION_DESCEND)
-        return (uint32_t)s->position_mm <= (uint32_t)s->bottom_limit_mm + WING_ENDPOINT_TOLERANCE_MM ? 1U : 0U;
+        return s->position_mm <= WingState_LowerTravel(s->top_limit_mm, s->bottom_limit_mm).endpoint_max_mm;
     return 0U;
 }
 

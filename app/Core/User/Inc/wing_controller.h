@@ -10,6 +10,7 @@
 #endif
 
 #define WING_ACTIVE_STATUS_POLL_MS 100U
+#define WING_IDLE_LIMIT_POLL_MS 3000U
 #define WING_QUERY_TIMEOUT_MS 300U
 #define WING_PREFLIGHT_QUIET_MS 250U
 #define WING_COMMAND_TIMEOUT_MS 1000U
@@ -55,6 +56,9 @@ typedef struct
 
 uint8_t WingController_Init(void);
 void WingController_Task(uint32_t now);
+uint8_t WingController_AutoResetActive(void);
+void WingController_LogAutoResetAlarm(void);
+void WingController_AutoResetTask(uint8_t control_pending);
 /* Main-loop only. A confirmed descent enables protection over the full stroke. */
 void WingController_AntiPinch(uint8_t pressed, uint8_t trigger);
 uint8_t WingController_RejectRemoteStartForUltrasonic(void);

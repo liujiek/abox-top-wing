@@ -132,6 +132,7 @@ uint8_t MQTT_App_ScheduleMqttConfigTrial(const char* request_id, const char* vid
     (void)request_id; (void)tls_enabled; (void)vid; (void)host; (void)port; (void)username; (void)password;
     return 0U;
 }
+uint8_t WingController_AutoResetActive(void) { return 0U; }
 const WingSnapshot* WingController_GetSnapshot(void)
 {
     static WingSnapshot snapshot;

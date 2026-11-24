@@ -94,6 +94,12 @@ int main(void)
     memset(&new_config, 0xa6, sizeof(new_config));
     old_config.reserved[0] = 0x3149344DU;
     new_config.reserved[0] = 0x3149344DU;
+    old_config.reserved[1] = new_config.reserved[1] = UINT32_MAX;
+    setup();
+    assert(OTA_Info_AutoResetLatched() == 0);
+    assert(OTA_Info_SetAutoResetLatched(1U) && OTA_Info_AutoResetLatched() == 1);
+    assert(OTA_Info_Clear() && OTA_Info_AutoResetLatched() == 1);
+    assert(OTA_Info_SetAutoResetLatched(0U) && OTA_Info_AutoResetLatched() == 0);
     setup();
     assert(OTA_Info_Save(&new_config));
     int save_events = event_count;

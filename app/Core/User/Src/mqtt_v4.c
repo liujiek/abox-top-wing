@@ -20,9 +20,6 @@
 _Static_assert(MQTT_V4_IDEM_COUNT <= (unsigned)INT8_MAX + 1U, "V4 request slot index");
 typedef struct
 {
-    char id[65];
-    char device_id[33];
-    uint8_t digest[32];
     uint64_t timestamp;
     uint64_t expires_at;
     uint32_t tick;
@@ -31,6 +28,9 @@ typedef struct
     uint8_t valid, inflight, sync, retry_response, awaiting_dispatch, completing, cancelled, has_expiry;
     WingAction action;
     PowerAction power;
+    char id[65];
+    char device_id[33];
+    uint8_t digest[32];
 } Request;
 static Request requests[CACHE_COUNT];
 static char response_buf[MQTT_APP_JSON_BUF_SZ];
@@ -49,18 +49,11 @@ static int direction(void* context, const cJSON* params)
     return cJSON_IsString(action) && (!strcmp(action->valuestring, "ascend") || !strcmp(action->valuestring, "descend"));
 }
 
-static int matches_action(void* context, const cJSON* params)
+static int stopping(void* context, const cJSON* params)
 {
     const char* action = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(params, "action"));
-    return action && !strcmp(action, (const char*)context);
-}
-
-/* Reserved at the MQTT boundary. Never admit this action to the motion controller. */
-static uint16_t reset_unavailable(void* context, const cJSON* params)
-{
     (void)context;
-    (void)params;
-    return 4002U;
+    return action && !strcmp(action, "stop");
 }
 
 static int power_action(void* context, const cJSON* params)
@@ -71,8 +64,7 @@ static int power_action(void* context, const cJSON* params)
 
 static const ABoxMqttOperation operations[] = {
     {"wing_control", "wing", ABOX_MQTT_COMMAND_DISCRETE_ACTION, ABOX_MQTT_EXPIRY_REQUIRED, 5000U, direction, NULL, NULL},
-    {"wing_control", "wing", ABOX_MQTT_COMMAND_SAFETY_STOP, ABOX_MQTT_EXPIRY_FORBIDDEN, 0U, matches_action, NULL, "stop"},
-    {"wing_control", "wing", ABOX_MQTT_COMMAND_DISCRETE_ACTION, ABOX_MQTT_EXPIRY_REQUIRED, 5000U, matches_action, reset_unavailable, "reset"},
+    {"wing_control", "wing", ABOX_MQTT_COMMAND_SAFETY_STOP, ABOX_MQTT_EXPIRY_FORBIDDEN, 0U, stopping, NULL, NULL},
     {"power_on", "device_power", ABOX_MQTT_COMMAND_DISCRETE_ACTION, ABOX_MQTT_EXPIRY_REQUIRED, 5000U, power_action, NULL, NULL},
     {"power_off", "device_power", ABOX_MQTT_COMMAND_SAFETY_STOP, ABOX_MQTT_EXPIRY_OPTIONAL, 0U, power_action, NULL, NULL}
 };
@@ -166,6 +158,13 @@ void MQTT_V4_CancelPendingMotion(void)
 {
     for (unsigned i = 0; i < CACHE_COUNT; ++i)
         if (requests[i].awaiting_dispatch && requests[i].power == POWER_NONE) requests[i].cancelled = 1U;
+}
+
+uint8_t MQTT_V4_ControlPending(void)
+{
+    for (unsigned i = 0; i < CACHE_COUNT; ++i)
+        if (requests[i].inflight && !requests[i].completing && !requests[i].sync) return 1U;
+    return 0U;
 }
 
 static uint8_t power_off_pending(void)

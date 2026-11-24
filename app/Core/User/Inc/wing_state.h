@@ -94,6 +94,13 @@ typedef struct
     uint8_t safety_stop_latched;
 } WingState;
 
+typedef struct
+{
+    uint16_t minimum_mm;
+    uint32_t endpoint_max_mm;
+} WingLowerTravel;
+
+WingLowerTravel WingState_LowerTravel(uint16_t top_limit_mm, uint16_t bottom_limit_mm);
 void WingState_Init(WingState* state);
 void WingState_ApplyFeedback(WingState* state, uint32_t now, uint16_t position_mm, uint8_t fault_code, uint8_t moving);
 uint8_t WingState_ApplyLimits(WingState* state, uint16_t top_limit_mm, uint16_t bottom_limit_mm);

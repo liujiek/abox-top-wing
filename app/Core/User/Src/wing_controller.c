@@ -7,6 +7,7 @@
 #include "main.h"
 #include "wing_protocol.h"
 #include "wing_power.h"
+#include "ota_info.h"
 #include "ultrasonic_board.h"
 
 #define RESULT_QUEUE_DEPTH 4U
@@ -25,7 +26,8 @@ typedef enum
     SESSION_WAIT_STOP_ACK,
     SESSION_WAIT_STOP_STATUS,
     SESSION_FAULT,
-    SESSION_WAIT_POWER_STATUS
+    SESSION_WAIT_POWER_STATUS,
+    SESSION_AUTO_RESET
 } SessionState;
 
 typedef enum { QUERY_NONE = 0, QUERY_RD, QUERY_RL } ExpectedQuery;
@@ -70,6 +72,69 @@ static struct {
 } g_pinch;
 static uint8_t g_pinch_pressed;
 
+typedef enum {
+    AUTO_IDLE, AUTO_LIMITS, AUTO_FIRST, AUTO_QUIET, AUTO_SECOND,
+    AUTO_DECIDE, AUTO_FINAL_CHECK, AUTO_SEND, AUTO_ACK, AUTO_TRACK
+} AutoPhase;
+
+static struct {
+    AutoPhase phase;
+    const char* alarm;
+    uint32_t tick, started, stopped_since;
+    uint16_t bottom, top, position;
+    WingLowerTravel lower;
+    uint8_t saw_motion, settling, warned, reserved_unsent;
+} auto_reset;
+
+static void end_probe(uint32_t now)
+{
+    if (auto_reset.phase >= AUTO_ACK) AntiPinchBoard_UpdateResetLamp(now, 0U);
+    auto_reset.phase = AUTO_IDLE;
+    auto_reset.tick = now;
+}
+
+uint8_t WingController_AutoResetActive(void)
+{
+    return auto_reset.phase >= AUTO_ACK;
+}
+
+static uint8_t reset_path_clear(uint32_t now)
+{
+    /* Require fresh, clear sonar until RS is dispatched. Power and contact
+     * protection remain mandatory throughout the reset. */
+    return WingPower_IsOn() && !AntiPinchBoard_ContactActive() &&
+           (WingController_AutoResetActive() || UltrasonicBoard_PathConfirmedClear(now));
+}
+
+/* A confirmed idle zero triggers recovery, even when RL allows zero. */
+static uint16_t auto_reset_minimum_mm(void)
+{
+    return auto_reset.bottom ? auto_reset.bottom : 1U;
+}
+
+static uint8_t at_reset_endpoint(uint16_t position)
+{
+    return position >= auto_reset.lower.minimum_mm && position <= auto_reset.lower.endpoint_max_mm &&
+           position <= auto_reset.top;
+}
+
+void WingController_LogAutoResetAlarm(void)
+{
+    const char* alarm = auto_reset.alarm;
+    if (alarm) APP_LOGE("AUTO_RS", "unresolved: %s", alarm);
+}
+
+static void push_report(WingReportReason reason);
+
+static void reset_alarm(const char* reason)
+{
+    auto_reset.alarm = reason;
+    APP_LOGE("AUTO_RS", "%s pos=%u range=%u..%u", reason, (unsigned)auto_reset.position,
+             (unsigned)auto_reset_minimum_mm(), (unsigned)auto_reset.top);
+    push_report(WING_REPORT_STATE_CHANGED);
+}
+
+
 static void stop_failed(uint16_t code);
 static uint8_t enforce_ultrasonic_stop(uint32_t now);
 static uint8_t ultrasonic_near_retraction_suppressed(void)
@@ -86,7 +151,8 @@ static void sync_ultrasonic_suppression(void)
 {
     uint8_t near = ultrasonic_near_retraction_suppressed();
     if (near) UltrasonicBoard_ClearAlarmHold();
-    UltrasonicBoard_SetAlarmSuppressed((uint8_t)(g_session.state == SESSION_IDLE || g_session.power_off_check || near));
+    UltrasonicBoard_SetAlarmSuppressed((uint8_t)(WingController_AutoResetActive() || g_session.state == SESSION_IDLE ||
+                                                g_session.power_off_check || near));
 }
 
 static uint8_t pinch_backoff_active(void)
@@ -99,8 +165,8 @@ static uint8_t pinch_backoff_active(void)
 static uint8_t anti_pinch_scope_eligible(void)
 {
     const WingSnapshot* snapshot = &g_state.snapshot;
-    return snapshot->have_position &&
-           snapshot->motion_state == WING_MOTION_DESCENDING;
+    return g_session.state == SESSION_AUTO_RESET || (snapshot->have_position &&
+           snapshot->motion_state == WING_MOTION_DESCENDING);
 }
 
 static void sync_anti_pinch_scope(void)
@@ -258,7 +324,14 @@ static void fail_direction(uint16_t code, WingControlOwner owner)
 static uint8_t begin_stop(StopCause cause, const char* stop_request_id, uint32_t now)
 {
     const char* tx_id = stop_request_id;
+    uint8_t aborted = 1U;
     if (g_session.stop_command_sent) return 1U;
+    if (g_session.state == SESSION_AUTO_RESET)
+    {
+        if (auto_reset.phase == AUTO_ACK)
+            aborted = HAL_CAN_AbortTxRequest(selected_can(), CAN_TX_MAILBOX0 | CAN_TX_MAILBOX1 | CAN_TX_MAILBOX2) == HAL_OK;
+        if (cause != STOP_ENDPOINT) reset_alarm("interrupted/unconfirmed");
+    }
     if (!g_session.direction_result_sent && g_session.direction_request_id[0])
     {
         push_result(g_session.direction_request_id, g_session.action, 5003U);
@@ -268,7 +341,7 @@ static uint8_t begin_stop(StopCause cause, const char* stop_request_id, uint32_t
     g_session.stop_cause = cause;
     copy_id(g_session.stop_request_id, stop_request_id);
     if (!tx_id || !tx_id[0]) tx_id = g_session.direction_request_id;
-    if (!send_action(WING_ACTION_STOP, tx_id))
+    if (!send_action(WING_ACTION_STOP, tx_id) || !aborted)
     {
         stop_failed(5001U);
         return 0U;
@@ -287,6 +360,11 @@ static uint8_t begin_stop(StopCause cause, const char* stop_request_id, uint32_t
 
 static void stop_failed(uint16_t code)
 {
+    if (auto_reset.phase >= AUTO_ACK)
+    {
+        reset_alarm("stop unconfirmed");
+        end_probe(HAL_GetTick());
+    }
     push_result(g_session.stop_request_id, WING_ACTION_STOP, code);
     if (g_pinch.phase != PINCH_NONE) g_pinch.phase = PINCH_FAILED;
     clear_session();
@@ -318,6 +396,7 @@ uint8_t WingController_RejectRemoteStartForUltrasonic(void)
 
 static void ultrasonic_stop(uint32_t now)
 {
+    if (WingController_AutoResetActive()) return;
     if (g_session.state == SESSION_IDLE ||
         ultrasonic_near_retraction_suppressed())
     {
@@ -351,10 +430,9 @@ void WingController_UltrasonicStop(void)
 
 static uint8_t enforce_ultrasonic_stop(uint32_t now)
 {
-    if (!pinch_backoff_active() && g_session.state != SESSION_IDLE &&
-        !ultrasonic_near_retraction_suppressed() &&
-        WingController_IsUltrasonicBlocked() &&
-        g_session.state >= SESSION_WAIT_RD1 && g_session.state <= SESSION_RUNNING)
+    if (g_session.state >= SESSION_WAIT_RD1 && g_session.state <= SESSION_RUNNING &&
+        !pinch_backoff_active() && !ultrasonic_near_retraction_suppressed() &&
+        WingController_IsUltrasonicBlocked())
     {
         ultrasonic_stop(now);
         return 1U;
@@ -369,6 +447,16 @@ static void finish_stop(void)
     WingControlOwner owner = g_session.stop_cause == STOP_CONFLICT ?
                              WING_CONTROL_OWNER_LOCAL_SUSPECTED : WING_CONTROL_OWNER_NONE;
     if (g_state.snapshot.fault_code) { stop_failed(5005U); return; }
+    if (auto_reset.phase >= AUTO_ACK)
+    {
+        if (g_session.stop_cause == STOP_ENDPOINT)
+        {
+            if (at_reset_endpoint(stopped_mm) && stopped_mm == auto_reset.position)
+                APP_LOGI("AUTO_RS", "confirmed stopped at endpoint pos=%u", (unsigned)stopped_mm);
+            else reset_alarm("final position unconfirmed");
+        }
+        end_probe(HAL_GetTick());
+    }
     if (g_session.stop_request_id[0])
         push_result(g_session.stop_request_id, WING_ACTION_STOP, 200U);
     WingState_ConfirmStop(&g_state, g_session.stop_request_id, g_session.stop_request_id[0] ? 1U : 0U);
@@ -525,6 +613,8 @@ static void assess_running_status(uint32_t now)
 
 uint8_t WingController_Init(void)
 {
+    memset(&auto_reset, 0, sizeof(auto_reset));
+    end_probe(HAL_GetTick());
     memset(&g_pinch, 0, sizeof(g_pinch));
     g_pinch_pressed = 0U;
     g_have_confirmed_stop = 0U;
@@ -543,7 +633,7 @@ uint8_t WingController_Init(void)
         return 0U;
     }
     g_can_ready = 1U;
-    APP_LOGI("WING", "CAN%u remote-session idle=silent tx=0x%08lX rx=0x%08lX",
+    APP_LOGI("WING", "CAN%u idle=limit-monitor tx=0x%08lX rx=0x%08lX",
              (unsigned)TOP_WING_CAN_BUS, (unsigned long)WING_CAN_TX_ID,
              (unsigned long)WING_CAN_RX_ID);
     return 1U;
@@ -558,6 +648,8 @@ static uint16_t controller_request(WingAction action, const char* request_id, ui
     if (!WingPower_IsOn()) return 5002U;
     if (!g_can_ready) return 5001U;
 
+    /* An operator request supersedes read-only background observations. */
+    if (auto_reset.phase < AUTO_ACK) end_probe(now);
     if (action == WING_ACTION_STOP)
     {
         if (g_session.power_off_check) fail_direction(4003U, WING_CONTROL_OWNER_NONE);
@@ -616,6 +708,7 @@ uint16_t WingController_CheckPowerOff(const char* request_id)
     uint16_t code = 0U;
     uint32_t now = HAL_GetTick();
     __disable_irq();
+    if (auto_reset.phase < AUTO_ACK) end_probe(now);
     if (!request_id || !request_id[0]) code = 4001U;
     else if (!WingPower_IsOn()) code = 5002U;
     else if (!g_can_ready) code = 5001U;
@@ -648,7 +741,16 @@ void WingController_AntiPinch(uint8_t pressed, uint8_t trigger)
     eligible = anti_pinch_scope_eligible();
     if (g_pinch.phase != PINCH_NONE) g_pinch_pressed = pressed ? 1U : 0U;
     else g_pinch_pressed = pressed && eligible ? 1U : 0U;
-    if (WingController_IsUltrasonicBlocked())
+    if (g_session.state == SESSION_AUTO_RESET && pressed && trigger)
+    {
+        /* The drive controls RS direction internally. Stop without starting MO. */
+        g_pinch.phase = PINCH_FINAL_STOP;
+        (void)begin_stop(STOP_SAFETY, "", HAL_GetTick());
+        sync_anti_pinch_scope();
+        __set_PRIMASK(irq);
+        return;
+    }
+    if (!WingController_AutoResetActive() && WingController_IsUltrasonicBlocked())
     {
         if (pressed && trigger && eligible && !pinch_backoff_active())
             g_pinch.phase = PINCH_HOLD;
@@ -743,9 +845,10 @@ static void receive_status(const WingCanMessage* message, uint32_t now)
 
     if (g_session.state == SESSION_WAIT_POWER_STATUS)
     {
+        WingLowerTravel lower = WingState_LowerTravel(g_state.snapshot.top_limit_mm, g_state.snapshot.bottom_limit_mm);
         uint16_t code = message->fault_code ? 5005U :
-            (message->moving || message->position_mm < g_state.snapshot.bottom_limit_mm ||
-             (uint32_t)message->position_mm > (uint32_t)g_state.snapshot.bottom_limit_mm + WING_ENDPOINT_TOLERANCE_MM) ? 4003U : 200U;
+            (message->moving || message->position_mm < lower.minimum_mm ||
+             message->position_mm > lower.endpoint_max_mm) ? 4003U : 200U;
         push_result(g_session.direction_request_id, WING_ACTION_NONE, code);
         finish_idle(WING_CONTROL_OWNER_NONE);
         return;
@@ -815,27 +918,233 @@ static void receive_status(const WingCanMessage* message, uint32_t now)
 
     if (g_session.state == SESSION_WAIT_STOP_STATUS)
     {
+        if (WingController_AutoResetActive()) AntiPinchBoard_UpdateResetLamp(now, message->moving);
         if (message->fault_code) { stop_failed(5005U); return; }
         if (!message->moving) finish_stop();
         return;
     }
 }
 
+/* The idle probe owns no motion session. Requests cancel it before starting a
+ * normal session. Only the main loop can persist the fence and transmit RS. */
+static uint8_t auto_query(AutoPhase phase, uint32_t now)
+{
+    uint8_t data[8];
+    if (phase == AUTO_LIMITS) WingProtocol_EncodeLimitQuery(data);
+    else WingProtocol_EncodeStatusQuery(data);
+    if (!send_frame(data)) return 0U;
+    auto_reset.phase = phase;
+    auto_reset.tick = now;
+    return 1U;
+}
+
+static void monitor_reset_status(const WingCanMessage* msg, uint32_t now)
+{
+    if (msg->kind != WING_FRAME_STATUS || g_session.expected_query != QUERY_RD) return;
+    if (!msg->accepted || now - g_session.query_tick >= WING_QUERY_TIMEOUT_MS ||
+        now - auto_reset.tick > WING_ACTIVE_FEEDBACK_TIMEOUT_MS ||
+        now - auto_reset.started >= WING_MAX_RUNTIME_MS ||
+        (!auto_reset.saw_motion && now - auto_reset.started >= WING_COMMAND_TIMEOUT_MS))
+    { (void)begin_stop(STOP_SAFETY, "", now); return; }
+    g_session.expected_query = QUERY_NONE;
+    auto_reset.tick = now;
+    WingState_ApplyFeedback(&g_state, now, msg->position_mm, msg->fault_code, msg->moving);
+    AntiPinchBoard_UpdateResetLamp(now, msg->moving);
+    if (msg->fault_code || !reset_path_clear(now))
+    { (void)begin_stop(STOP_SAFETY, "", now); return; }
+    if (msg->moving)
+    {
+        if (!auto_reset.saw_motion)
+        {
+            WingState_SetSession(&g_state, WING_CAN_SESSION_REMOTE_RUNNING, WING_PHASE_RUNNING, WING_CONTROL_OWNER_NONE);
+            push_report(WING_REPORT_STATE_CHANGED);
+        }
+        auto_reset.saw_motion = 1U;
+        auto_reset.settling = 0U;
+    }
+    else if (auto_reset.saw_motion)
+    {
+        if (!auto_reset.settling || msg->position_mm != auto_reset.position)
+        {
+            auto_reset.settling = 1U;
+            auto_reset.stopped_since = now;
+        }
+        else if (now - auto_reset.stopped_since >= WING_PREFLIGHT_QUIET_MS && at_reset_endpoint(msg->position_mm))
+            (void)begin_stop(STOP_ENDPOINT, "", now);
+        else if (now - auto_reset.stopped_since >= WING_COMMAND_TIMEOUT_MS)
+            (void)begin_stop(STOP_CONFLICT, "", now);
+    }
+    auto_reset.position = msg->position_mm;
+}
+
+static void auto_receive(const WingCanMessage* msg, uint32_t now)
+{
+    AutoPhase phase = auto_reset.phase;
+    if (phase == AUTO_ACK)
+    {
+        if (msg->kind != WING_FRAME_RESET_ACK) return;
+        if (now - auto_reset.started >= WING_COMMAND_TIMEOUT_MS)
+        { (void)begin_stop(STOP_SAFETY, "", now); return; }
+        if (!msg->accepted)
+        {
+            reset_alarm("drive rejected reset");
+            end_probe(now);
+            finish_idle(WING_CONTROL_OWNER_NONE);
+            return;
+        }
+        auto_reset.phase = AUTO_TRACK;
+        auto_reset.tick = now;
+        if (!reset_path_clear(now) || !send_query(QUERY_RD, now))
+            (void)begin_stop(STOP_SAFETY, "", now);
+        return;
+    }
+    if (phase == AUTO_TRACK) { monitor_reset_status(msg, now); return; }
+    if ((phase == AUTO_QUIET || phase == AUTO_DECIDE || phase == AUTO_SEND) &&
+        msg->kind == WING_FRAME_STATUS && (!msg->accepted || msg->moving || msg->fault_code ||
+                                           msg->position_mm != auto_reset.position))
+    { end_probe(now); return; }
+    if (phase == AUTO_LIMITS && msg->kind == WING_FRAME_LIMITS)
+    {
+        if (now - auto_reset.tick >= WING_QUERY_TIMEOUT_MS || msg->top_limit_mm <= msg->bottom_limit_mm)
+        { end_probe(now); return; }
+        auto_reset.top = msg->top_limit_mm;
+        auto_reset.bottom = msg->bottom_limit_mm;
+        auto_reset.lower = WingState_LowerTravel(auto_reset.top, auto_reset.bottom);
+        if (!auto_query(AUTO_FIRST, now)) end_probe(now);
+        return;
+    }
+    if (msg->kind != WING_FRAME_STATUS ||
+        (phase != AUTO_FIRST && phase != AUTO_SECOND && phase != AUTO_FINAL_CHECK)) return;
+    if (now - auto_reset.tick >= WING_QUERY_TIMEOUT_MS || !msg->accepted || msg->fault_code || msg->moving ||
+        (phase != AUTO_FIRST && msg->position_mm != auto_reset.position))
+    { end_probe(now); return; }
+    auto_reset.position = msg->position_mm;
+    auto_reset.tick = now;
+    auto_reset.phase = phase == AUTO_FIRST ? AUTO_QUIET : (phase == AUTO_SECOND ? AUTO_DECIDE : AUTO_SEND);
+}
+
+static void auto_dispatch(uint32_t now)
+{
+    uint8_t frame[8];
+    WingProtocol_EncodeReset(frame);
+    auto_reset.reserved_unsent = 0U;
+    WingState_ApplyLimits(&g_state, auto_reset.top, auto_reset.bottom);
+    WingState_ApplyFeedback(&g_state, now, auto_reset.position, 0U, 0U);
+    if (!send_frame(frame))
+    {
+        reset_alarm("reset transmission failed");
+        end_probe(now);
+        finish_idle(WING_CONTROL_OWNER_NONE);
+        return;
+    }
+    g_session.state = SESSION_AUTO_RESET;
+    auto_reset.phase = AUTO_ACK;
+    auto_reset.started = now;
+    auto_reset.saw_motion = auto_reset.settling = 0U;
+    WingState_SetSession(&g_state, WING_CAN_SESSION_PREFLIGHT, WING_PHASE_STARTING, WING_CONTROL_OWNER_NONE);
+    sync_anti_pinch_scope();
+    sync_ultrasonic_suppression();
+    AntiPinchBoard_UpdateResetLamp(now, 1U);
+    APP_LOGW("AUTO_RS", "reset once pos=%u range=%u..%u", (unsigned)auto_reset.position,
+             (unsigned)auto_reset_minimum_mm(), (unsigned)auto_reset.top);
+}
+
+/* Main loop, after incoming control commands have been serviced. Flash
+ * transactions run with interrupts enabled. Recheck position afterwards. */
+void WingController_AutoResetTask(uint8_t control_pending)
+{
+    uint32_t irq = __get_PRIMASK();
+    __disable_irq();
+    uint32_t now = HAL_GetTick();
+    if (g_session.state == SESSION_AUTO_RESET)
+    {
+        if (!reset_path_clear(now) || now - auto_reset.started >= WING_MAX_RUNTIME_MS ||
+            (auto_reset.phase == AUTO_TRACK && now - auto_reset.tick > WING_ACTIVE_FEEDBACK_TIMEOUT_MS) ||
+            (!auto_reset.saw_motion && now - auto_reset.started >= WING_COMMAND_TIMEOUT_MS) ||
+            (g_session.expected_query == QUERY_RD && now - g_session.query_tick >= WING_QUERY_TIMEOUT_MS))
+            (void)begin_stop(STOP_SAFETY, "", now);
+        else if (auto_reset.phase == AUTO_TRACK && g_session.expected_query == QUERY_NONE &&
+                 now - g_session.last_poll_tick >= WING_ACTIVE_STATUS_POLL_MS && !send_query(QUERY_RD, now))
+            (void)begin_stop(STOP_SAFETY, "", now);
+        goto done;
+    }
+    if (auto_reset.phase >= AUTO_ACK) goto done; /* ST confirmation owns CAN. */
+    if (!g_can_ready || control_pending || g_session.state != SESSION_IDLE || g_pinch.phase != PINCH_NONE ||
+        g_pinch_pressed || !WingPower_IsOn())
+    { end_probe(now); goto done; }
+    switch (auto_reset.phase)
+    {
+        case AUTO_IDLE:
+            if (now - auto_reset.tick >= WING_IDLE_LIMIT_POLL_MS && !auto_query(AUTO_LIMITS, now)) end_probe(now);
+            break;
+        case AUTO_QUIET:
+            if (now - auto_reset.tick >= WING_COMMAND_TIMEOUT_MS) end_probe(now);
+            else if (now - auto_reset.tick >= WING_PREFLIGHT_QUIET_MS && !auto_query(AUTO_SECOND, now)) end_probe(now);
+            break;
+        case AUTO_DECIDE:
+        {
+            uint8_t outside = auto_reset.position < auto_reset_minimum_mm() || auto_reset.position > auto_reset.top;
+            if (now - auto_reset.tick >= WING_QUERY_TIMEOUT_MS || (outside && !reset_path_clear(now)))
+            { end_probe(now); break; }
+            __set_PRIMASK(irq);
+            int latched = OTA_Info_AutoResetLatched();
+            int claim = outside && latched == 0;
+            uint8_t ok = latched >= 0;
+            if (claim || (!outside && latched > 0)) ok = OTA_Info_SetAutoResetLatched(outside);
+            __disable_irq();
+            now = HAL_GetTick();
+            if (claim && ok) auto_reset.reserved_unsent = 1U;
+            if (!outside && ok) auto_reset.reserved_unsent = 0U;
+            if (auto_reset.phase != AUTO_DECIDE) break;
+            if (!ok || (outside && latched > 0 && !auto_reset.reserved_unsent))
+            {
+                if (!auto_reset.warned)
+                {
+                    reset_alarm(!ok ? "one-shot storage unavailable" : "still outside; reset inhibited");
+                    auto_reset.warned = 1U;
+                }
+            }
+            else if (!outside) { auto_reset.warned = 0U; auto_reset.alarm = NULL; }
+            if (outside && ok && auto_reset.reserved_unsent && reset_path_clear(now) && auto_query(AUTO_FINAL_CHECK, now)) break;
+            end_probe(now);
+            break;
+        }
+        case AUTO_SEND:
+            if (now - auto_reset.tick < WING_QUERY_TIMEOUT_MS && reset_path_clear(now)) auto_dispatch(now);
+            else end_probe(now);
+            break;
+        default:
+            if (now - auto_reset.tick >= WING_QUERY_TIMEOUT_MS) end_probe(now);
+            break;
+    }
+done:
+    __set_PRIMASK(irq);
+}
+
 void WingController_OnCanRx(CAN_HandleTypeDef* hcan)
 {
-    CAN_RxHeaderTypeDef header;
+    CAN_RxHeaderTypeDef header = {0};
     uint8_t data[8];
     WingCanMessage msg;
     uint32_t now;
     if (HAL_CAN_GetRxMessage(hcan, CAN_RX_FIFO0, &header, data) != HAL_OK) return;
     if (hcan != selected_can()) return; /* Drain even the unused bus FIFO. */
-    if (header.IDE != CAN_ID_EXT ||
+    if (header.IDE != CAN_ID_EXT || header.RTR != CAN_RTR_DATA ||
         !WingProtocol_Decode(header.ExtId, (uint8_t)header.DLC, data, &msg)) return;
     now = HAL_GetTick();
+    if ((g_session.state == SESSION_IDLE && auto_reset.phase != AUTO_IDLE) ||
+        g_session.state == SESSION_AUTO_RESET)
+    {
+        auto_receive(&msg, now);
+        return;
+    }
     if (!g_session.power_off_check && enforce_ultrasonic_stop(now)) return;
     if (g_session.state != SESSION_WAIT_STOP_ACK && g_session.state != SESSION_WAIT_STOP_STATUS &&
         pinch_receive(&msg, now)) return;
 
+    if (auto_reset.phase >= AUTO_ACK && g_session.stop_command_sent &&
+        now - g_session.stop_tick >= WING_COMMAND_TIMEOUT_MS)
+    { stop_failed(5003U); return; }
     if (msg.kind == WING_FRAME_ACK) receive_ack(&msg, now);
     else if (msg.kind == WING_FRAME_LIMITS) receive_limits(&msg, now);
     else receive_status(&msg, now);

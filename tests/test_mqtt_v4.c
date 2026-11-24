@@ -209,14 +209,14 @@ static void finish_start(void)
     limits(100U,10U,253U); ack(WING_ACTION_ASCEND,254U); status(50U,1U,255U); results();
 }
 
-static void test_reserved_reset(void)
+static void test_invalid_wing_action(void)
 {
     reset_all();
     for (unsigned i = 0; i < 2U; ++i)
     {
         request("reset-retry", "reset");
         assert(response_count == i + 1U && !strcmp(response_ids[i], "reset-retry"));
-        assert(code() == 4002 && g_tx_count == 0U);
+        assert(code() == 4001 && g_tx_count == 0U);
     }
     request("unknown-action", "other");
     assert(code() == 4001 && g_tx_count == 0U);
@@ -225,7 +225,7 @@ static void test_reserved_reset(void)
     finish_start();
     unsigned tx_before = g_tx_count;
     request("reset-while-moving", "reset");
-    assert(code() == 4002 && g_tx_count == tx_before);
+    assert(code() == 4001 && g_tx_count == tx_before);
     assert(WingController_GetSnapshot()->active_action == WING_ACTION_ASCEND);
 
     request("stop-after-reset", "stop");
@@ -566,6 +566,10 @@ static void test_async_stop_and_expiry(void)
 {
     reset_all(); ota_busy=1;
     request("waiting-for-ufs","ascend"); assert(!g_tx_count && !response_count);
+    assert(MQTT_V4_ControlPending());
+    g_tick = 5000U;
+    WingController_AutoResetTask(MQTT_V4_ControlPending());
+    assert(!g_tx_count);
     MQTT_V4_HandleRequest("{\"version\":\"4.0\",\"timestamp\":1,\"data\":{\"requestId\":\"query-during-ufs-busy\",\"command\":\"sync_state\",\"params\":null}}");
     assert(code()==200 && !g_tx_count);
     request("stop-during-ufs-busy","stop"); assert(count_command('S','T')==1U);
@@ -777,7 +781,7 @@ int main(int argc, char** argv)
         puts("]}");
         return 0;
     }
-    test_reserved_reset();
+    test_invalid_wing_action();
     test_first_use_waits_for_trial_confirmation();
     wing_control_regression();
     test_expiry_and_strict_input(); test_replay_and_reboot(); test_uncertain_and_torn_records();

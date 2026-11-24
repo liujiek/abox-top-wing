@@ -101,6 +101,11 @@ def artifact(path: Path) -> dict:
 def save_json(path: Path, value: dict) -> None:
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="\n")
 
+def can_metadata(app: bytes) -> dict:
+    polling = b"idle_limit_monitor\0" in app
+    return {"can_session_mode": "idle_limit_monitor" if polling else "remote_only_idle_silent",
+            "idle_status_poll_enabled": polling}
+
 def create_variant(stage: Path, board: str, app: Path, version: str, sources: dict, toolchain: str) -> None:
     suffix, _, mcu, boot_version, _ = BOARDS[board]
     require(version.endswith("-" + suffix), "board version suffix mismatch")
@@ -126,7 +131,7 @@ def create_variant(stage: Path, board: str, app: Path, version: str, sources: di
     manifest = {"manifest_version": 2, "product": "top_flying_wing", "firmware_version": version,
                 "configuration": "Release", "hardware_target": board, "mcu": mcu,
                 "boot_version": boot_version, "ota_scheme": "boot_v2_ufs", "ota_downloader": "app",
-                "can_session_mode": "remote_only_idle_silent", "idle_status_poll_enabled": False,
+                **can_metadata(app_data),
                 "app_range": "0x08008000..0x0803DFFF", "config_recovery_page": "0x0803E000",
                 "boot_state_pages": ["0x0803E800", "0x0803F000"], "config_page": "0x0803F800",
                 "boot_state_initialization": {"format_version": 3, "state_a": "CONFIRMED", "state_b": "erased"},
@@ -136,8 +141,7 @@ def create_variant(stage: Path, board: str, app: Path, version: str, sources: di
     release = {"schema_version": 1, "product": "top_flying_wing", "version": version,
                "artifact": "top_flying_wing_app.bin", "file": "TopFlyingWing_App.bin",
                "immutable": not sources["candidate_only"], "hardware_target": board,
-               "boot_version": boot_version, "can_session_mode": "remote_only_idle_silent",
-               "idle_status_poll_enabled": False, **sources,
+               "boot_version": boot_version, **can_metadata(app_data), **sources,
                **{key: app_artifact[key] for key in ("size", "crc32", "sha256")}}
     save_json(folder / "release.manifest.json", release)
     label = "候选包（不得作为正式发布或 OTA 版本）" if sources["candidate_only"] else "正式烧录包"
@@ -188,9 +192,6 @@ def validate_variant(folder: Path, board: str, candidate: bool) -> dict:
             manifest["boot_state_pages"] == ["0x0803E800", "0x0803F000"] and
             manifest["boot_state_initialization"] == {"format_version": 3, "state_a": "CONFIRMED", "state_b": "erased"},
             f"{board} Flash layout mismatch")
-    for obj in (manifest, release):
-        require(obj["can_session_mode"] == "remote_only_idle_silent" and obj["idle_status_poll_enabled"] is False,
-                f"{board} CAN session metadata mismatch")
     require(manifest["ota_scheme"] == "boot_v2_ufs" and manifest["ota_downloader"] == "app" and
             release["artifact"] == "top_flying_wing_app.bin" and release["file"] == "TopFlyingWing_App.bin",
             f"{board} OTA metadata mismatch")
@@ -201,6 +202,11 @@ def validate_variant(folder: Path, board: str, candidate: bool) -> dict:
         require(item == artifact(folder / item["name"]), f"{board} artifact mismatch: {item['name']}")
     boot = (folder / "ABox_Boot.bin").read_bytes()
     app = (folder / "TopFlyingWing_App.bin").read_bytes()
+    expected_can = can_metadata(app)
+    for obj in (manifest, release):
+        require(obj["can_session_mode"] == expected_can["can_session_mode"] and
+                obj["idle_status_poll_enabled"] is expected_can["idle_status_poll_enabled"],
+                f"{board} CAN session metadata mismatch")
     state = (folder / "TopFlyingWing_BootState.bin").read_bytes()
     full = (folder / "TopFlyingWing_Full.bin").read_bytes()
     require(sha(boot) == boot_hash and boot == boot_file(board).read_bytes(), f"{board} Boot mismatch")

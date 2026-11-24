@@ -97,7 +97,7 @@ static uint8_t OTA_Info_ReadRaw(OTA_Info_t *info)
     return 1U;
 }
 void OTA_Info_Load(OTA_Info_t *info) { (void)OTA_Info_ReadRaw(info); }
-static uint8_t OTA_Info_WriteRaw(const OTA_Info_t *info)
+static uint8_t write_config(const OTA_Info_t *info, int reset_latch)
 {
     const RecoveryRecord *r = (const RecoveryRecord *)(uintptr_t)CONFIG_RECOVERY_ADDR;
     const OTA_Info_t *old = (const OTA_Info_t *)(uintptr_t)OTA_INFO_ADDR;
@@ -109,6 +109,8 @@ static uint8_t OTA_Info_WriteRaw(const OTA_Info_t *info)
     if (!recover_locked() || !MQTT_V4_StoreCanErase()) goto done;
     next = *info;
     next.reserved[0] = old->reserved[0];
+    next.reserved[1] = reset_latch < 0 ? old->reserved[1] :
+                       (reset_latch ? 0x52534C31U : UINT32_MAX);
     header[0] = RECOVERY_MAGIC; header[1] = sizeof(*old);
     header[2] = crc32(old, sizeof(*old)); header[3] = crc32(&next, sizeof(next)); header[4] = ~header[3];
     if (!ABox_PortFlashBegin()) goto done;
@@ -128,6 +130,21 @@ done:
     __atomic_clear(&g_config_busy, __ATOMIC_RELEASE);
     return ok;
 }
+static uint8_t OTA_Info_WriteRaw(const OTA_Info_t *info) { return write_config(info, -1); }
+
+int OTA_Info_AutoResetLatched(void)
+{
+    if (!OTA_Info_ReadRaw(&g_ota_info_work)) return -1;
+    uint32_t marker = g_ota_info_work.reserved[1];
+    return marker != UINT32_MAX && marker != 0U;
+}
+
+uint8_t OTA_Info_SetAutoResetLatched(uint8_t latched)
+{
+    if (!OTA_Info_ReadRaw(&g_ota_info_work)) return 0U;
+    return write_config(&g_ota_info_work, latched != 0U);
+}
+
 uint8_t OTA_Info_Save(const OTA_Info_t *info) { return OTA_Info_WriteRaw(info); }
 
 uint8_t OTA_Info_LoadBoardConfig(BoardConfigStore_t* cfg)

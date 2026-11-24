@@ -136,6 +136,16 @@ uint8_t UltrasonicBoard_ObstacleActive(uint32_t now)
     return active;
 }
 
+uint8_t UltrasonicBoard_PathConfirmedClear(uint32_t now)
+{
+    uint32_t irq = __get_PRIMASK();
+    __disable_irq();
+    uint8_t clear = ready && alarm.seen && now - alarm.last_rx <= ULTRASONIC_FRESH_MS &&
+                    !UltrasonicAlarm_Update(&alarm, now) && !stop_pending;
+    __set_PRIMASK(irq);
+    return clear;
+}
+
 uint8_t UltrasonicBoard_IsAlarm(uint32_t now)
 {
     uint32_t irq = __get_PRIMASK();

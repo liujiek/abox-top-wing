@@ -164,13 +164,13 @@ A-BOX 只订阅自身精确的配置和 OTA 请求 Topic。内部响应优先于
       "canBus": 2,
       "canBitrate": 500000,
       "feedbackTimeoutMs": 500,
-      "canSessionMode": "remote_only_idle_silent"
+      "canSessionMode": "idle_limit_monitor"
     }
   }
 }
 ```
 
-`bootVersion` 只有在 Boot descriptor 校验有效时可信；平台应结合 `bootDescriptorValid` 判断。`stableSeedSource=local_flash` 表示稳定槽从当前运行 App 的本地 Flash 初始化，不依赖平台先发布一个引导 revision；因此 `otaBootstrapNeedsRevision` 固定为 `false`。`canSessionMode=remote_only_idle_silent` 表示完全空闲时不发送控制器查询。`mqttTls` 表示已保存的 TLS 配置，`mqttTlsActive` 表示当前 runtime 已就绪并启用 TLS，`trustedTime` 表示公共时钟处于可信同步质量；三者不互相替代。响应不返回 MQTT 用户名、密码或 OTA CA 内容。
+`bootVersion` 只有在 Boot descriptor 校验有效时可信；平台应结合 `bootDescriptorValid` 判断。`stableSeedSource=local_flash` 表示稳定槽从当前运行 App 的本地 Flash 初始化，不依赖平台先发布一个引导 revision；因此 `otaBootstrapNeedsRevision` 固定为 `false`。`canSessionMode=idle_limit_monitor` 表示设备在空闲时查询限位和位置；旧固件的 `remote_only_idle_silent` 表示空闲时不发起查询。`mqttTls` 表示已保存的 TLS 配置，`mqttTlsActive` 表示当前 runtime 已就绪并启用 TLS，`trustedTime` 表示公共时钟处于可信同步质量；三者不互相替代。响应不返回 MQTT 用户名、密码或 OTA CA 内容。
 
 `otaPhase` 使用大写状态字符串，当前可能为 `IDLE`、`SEEDING_LOCAL`、`WAIT_MODEM`、`RETRY_WAIT`、`PROVISIONING`、`DOWNLOADING`、`VERIFYING`、`ERROR`，以及公共 HTTPS/UFS 下载器返回的细分阶段。平台不得按旧示例使用小写 `idle` 判断状态。
 

@@ -46,6 +46,9 @@ uint8_t OTA_Info_PrepareExternalWrite(void);
 void OTA_Info_Load(OTA_Info_t* info);
 uint8_t OTA_Info_Save(const OTA_Info_t* info);
 uint8_t OTA_Info_Clear(void);
+/* Main loop only. Returns -1 if the one-shot marker cannot be read. */
+int OTA_Info_AutoResetLatched(void);
+uint8_t OTA_Info_SetAutoResetLatched(uint8_t latched);
 uint8_t OTA_Info_LoadBoardConfig(BoardConfigStore_t* cfg);
 uint8_t OTA_Info_SaveBoardConfig(const BoardConfigStore_t* cfg);
 uint8_t OTA_Info_HasRequest(void);

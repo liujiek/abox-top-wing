@@ -226,5 +226,47 @@ int main(void)
     assert(output == GPIO_PIN_RESET);
     AntiPinchBoard_Tick(4041U);
     assert(output == GPIO_PIN_SET && AntiPinchBoard_TakeTrigger());
+    /* RS alone lights PA0. Moving feedback keeps it on across tick wrap. */
+    AntiPinchBoard_Init();
+    UltrasonicAlarm_Init(&sonar);
+    contact = GPIO_PIN_RESET;
+    uint32_t now = UINT32_MAX - 2000U;
+    AntiPinchBoard_UpdateResetLamp(now, 1U);
+    AntiPinchBoard_Tick(now - 1U); /* Timer interrupted by a newer CAN sample. */
+    assert(output == GPIO_PIN_SET && !AntiPinchBoard_TakeTrigger());
+    unsigned lit_writes = writes;
+    for (unsigned i = 0; i < 45; ++i)
+    {
+        now += 100U;
+        AntiPinchBoard_UpdateResetLamp(now, 1U);
+        AntiPinchBoard_Tick(now);
+        assert(writes == lit_writes);
+    }
+    AntiPinchBoard_UpdateResetLamp(now + 100U, 0U);
+    AntiPinchBoard_UpdateResetLamp(now + 500U, 0U);
+    AntiPinchBoard_Tick(now + 3099U);
+    assert(output == GPIO_PIN_SET && writes == lit_writes);
+    AntiPinchBoard_Tick(now + 3100U);
+    assert(output == GPIO_PIN_RESET);
+
+    /* Motion resumes during the tail. Silence then expires the reset lamp
+     * while the sonar alarm continues to own the shared output. */
+    now += 4000U;
+    AntiPinchBoard_UpdateResetLamp(now, 1U);
+    AntiPinchBoard_UpdateResetLamp(now + 100U, 0U);
+    AntiPinchBoard_UpdateResetLamp(now + 3000U, 1U);
+    AntiPinchBoard_Tick(now + 3100U);
+    assert(output == GPIO_PIN_SET);
+    UltrasonicAlarm_OnFrame(&sonar,now + 5900U,WL300D_CAN_ID,1,0,8,distances);
+    AntiPinchBoard_Tick(now + 6000U);
+    assert(output == GPIO_PIN_SET);
+    AntiPinchBoard_Tick(now + 7900U);
+    assert(output == GPIO_PIN_RESET);
+    now += 8000U;
+    AntiPinchBoard_UpdateResetLamp(now, 1U);
+    AntiPinchBoard_Tick(now + 2999U);
+    assert(output == GPIO_PIN_SET);
+    AntiPinchBoard_Tick(now + 3000U);
+    assert(output == GPIO_PIN_RESET);
     return 0;
 }

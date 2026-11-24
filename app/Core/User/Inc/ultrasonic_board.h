@@ -11,6 +11,7 @@ void UltrasonicBoard_StartPrestartWarning(uint32_t now);
 uint8_t UltrasonicBoard_IsAlarm(uint32_t now);
 uint8_t UltrasonicBoard_TakeTrigger(void);
 uint8_t UltrasonicBoard_MotionBlocked(uint32_t now);
+uint8_t UltrasonicBoard_PathConfirmedClear(uint32_t now);
 uint8_t UltrasonicBoard_ObstacleActive(uint32_t now);
 typedef struct {
     uint32_t received, accepted, last_id, last_frame_tick, last_valid_tick;

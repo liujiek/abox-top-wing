@@ -113,13 +113,14 @@ int main(void)
 #endif
     for (;;) {
 #ifdef TOP_WING_ZHONGTIAN
-        if (UltrasonicBoard_TakeTrigger()) { MQTT_V4_CancelPendingMotion(); WingController_UltrasonicStop(); }
+        if (UltrasonicBoard_TakeTrigger() && !WingController_AutoResetActive()) { MQTT_V4_CancelPendingMotion(); WingController_UltrasonicStop(); }
         UltrasonicMonitor_Task(HAL_GetTick());
         uint8_t trigger = AntiPinchBoard_TakeTrigger();
         if (trigger) MQTT_V4_CancelPendingMotion();
         WingController_AntiPinch(AntiPinchBoard_IsPressed(), trigger);
         WingController_Task(HAL_GetTick());
         WingAppService_Poll(HAL_GetTick());
+        WingController_AutoResetTask(MQTT_V4_ControlPending() || MQTT_App_MaintenancePending());
 #else
         WingAppService_Poll(HAL_GetTick());
         if (!communication_ok) WingController_Task(HAL_GetTick());

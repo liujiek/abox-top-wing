@@ -56,9 +56,6 @@ def verify(directory, expected_version=None):
     }, 'Boot State initialization metadata mismatch')
     require(manifest['ota_scheme'] == 'boot_v2_ufs' and manifest['ota_downloader'] == 'app',
             'OTA scheme mismatch')
-    for obj in (manifest, release):
-        require(obj['can_session_mode'] == 'remote_only_idle_silent' and
-                obj['idle_status_poll_enabled'] is False, 'CAN session metadata mismatch')
 
     artifacts = {a['name']: a for a in manifest['artifacts']}
     require(len(manifest['artifacts']) == len(LOAD_ADDRESSES) and
@@ -79,6 +76,10 @@ def verify(directory, expected_version=None):
 
     boot = images['ABox_Boot.bin']
     app = images['TopFlyingWing_App.bin']
+    polling = b'idle_limit_monitor\0' in app
+    for obj in (manifest, release):
+        require(obj['can_session_mode'] == ('idle_limit_monitor' if polling else 'remote_only_idle_silent') and
+                obj['idle_status_poll_enabled'] is polling, 'CAN session metadata mismatch')
     state = images['TopFlyingWing_BootState.bin']
     full = images['TopFlyingWing_Full.bin']
     frozen = ROOT / 'platform/targets/stm32f105_abox_boot'
