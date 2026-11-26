@@ -20,10 +20,38 @@ int main(void)
     for (unsigned i=0;i<8;++i)
     {
         UltrasonicAlarm_Init(&s);
-        memset(d,0xFF,8); d[i]=(uint8_t)(i+1U);
+        memset(d,151,8);
+        d[i]=254;
+        frame(&s,0,d);
+        assert(!s.active && s.obstacle_mask==0);
+        d[i]=150;
         frame(&s,10,d);
+        assert(!s.active && s.obstacle_mask==(1U<<i));
+        frame(&s,15,d);
         assert(s.active && s.obstacle_mask==(1U<<i));
+        d[i]=151;
+        frame(&s,20,d);
+        assert(s.active && s.clearing && s.obstacle_mask==0);
+        frame(&s,2019,d);
+        assert(s.active);
+        frame(&s,2020,d);
+        assert(!s.active);
     }
+    /* A different probe, a clear frame, or stale data cannot confirm a hit. */
+    UltrasonicAlarm_Init(&s);
+    memset(d,0,8);
+    d[0]=1; frame(&s,0,d);
+    d[0]=0; d[1]=150; frame(&s,100,d);
+    assert(!s.active);
+    d[1]=151; frame(&s,200,d);
+    d[1]=100; frame(&s,300,d);
+    assert(!s.active);
+    frame(&s,801,d);
+    assert(!s.active);
+    assert(!UltrasonicAlarm_OnFrame(&s,850,WL300D_CAN_ID+1,1,0,8,d));
+    assert(!s.active && s.last_rx==801);
+    d[1]=149; frame(&s,901,d);
+    assert(s.active);
     UltrasonicAlarm held;
     UltrasonicAlarm_Init(&held);
     memset(d,30,8);
@@ -33,20 +61,23 @@ int main(void)
         frame(&held,t,d);
         assert(held.active);
     }
-    memset(d,30,8); frame(&s,20,d); assert(s.obstacle_mask==255);
+    UltrasonicAlarm_Init(&s);
+    memset(d,30,8); frame(&s,10,d); frame(&s,20,d); assert(s.obstacle_mask==255);
     memset(d,0xFF,8); frame(&s,100,d);
     for(uint32_t t=200;t<=1000;t+=100) { frame(&s,t,d); assert(s.active); }
     assert(UltrasonicAlarm_Update(&s,2099));
     assert(!UltrasonicAlarm_Update(&s,2100));
     memset(d,0x00,8); frame(&s,2100,d);
-    d[1]=40; frame(&s,2200,d);
+    d[1]=40; frame(&s,2150,d); frame(&s,2200,d);
     memset(d,0x00,8); frame(&s,2300,d);
     d[2]=50; frame(&s,2500,d); /* Obstacle reappears during tail. */
+    assert(s.active && s.clearing);
+    frame(&s,2550,d);
     assert(s.active && !s.clearing);
     memset(d,0x00,8); frame(&s,2600,d);
     assert(UltrasonicAlarm_Update(&s,4599));
     assert(!UltrasonicAlarm_Update(&s,4600)); /* Two seconds after first clear frame. */
-    memset(d,0xFF,8); d[2]=50; frame(&s,4700,d);
+    memset(d,0xFF,8); d[2]=50; frame(&s,4650,d); frame(&s,4700,d);
     memset(d,0x00,8); frame(&s,4800,d);
     for(uint32_t t=4900;t<=5700;t+=100) frame(&s,t,d);
     assert(UltrasonicAlarm_Update(&s,6799));
@@ -60,11 +91,13 @@ int main(void)
     assert(!UltrasonicAlarm_OnFrame(&s,6800,WL300D_CAN_ID,1,0,8,0));
     assert(s.last_rx==last && !s.active);
     /* Nonmatching traffic does not extend the two-second silence timeout. */
-    d[0]=30;frame(&s,7000,d);
+    d[0]=30;frame(&s,6950,d);frame(&s,7000,d);
     assert(!UltrasonicAlarm_OnFrame(&s,7900,WL300D_CAN_ID+1,1,0,8,d));
     assert(UltrasonicAlarm_Update(&s,8999));
     assert(!UltrasonicAlarm_Update(&s,9000));
     assert(s.obstacle_mask==1); /* Last observation remains available for diagnostics. */
+    frame(&s,9050,d);
+    assert(!s.active);
     frame(&s,9100,d);
     assert(s.active); /* New obstacle data rearms without a power cycle. */
     assert(UltrasonicAlarm_Update(&s,11099));
@@ -72,12 +105,12 @@ int main(void)
     /* Timers retain their semantics at uint32 wrap. */
     UltrasonicAlarm_Init(&s);
     uint32_t base=UINT32_MAX-400U;
-    d[0]=30; frame(&s,base,d);
+    d[0]=30; frame(&s,base-50,d); frame(&s,base,d);
     d[0]=0x00; frame(&s,base+100,d);
     for(uint32_t dt=200;dt<=1000;dt+=100) frame(&s,base+dt,d);
     assert(UltrasonicAlarm_Update(&s,base+2099));
     assert(!UltrasonicAlarm_Update(&s,base+2100));
-    d[0]=30;frame(&s,base+2200,d);
+    d[0]=30;frame(&s,base+2150,d);frame(&s,base+2200,d);
     assert(UltrasonicAlarm_Update(&s,base+4199));
     assert(!UltrasonicAlarm_Update(&s,base+4200));
     return 0;

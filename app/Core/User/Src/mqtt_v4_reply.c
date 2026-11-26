@@ -3,6 +3,7 @@
 #include <string.h>
 #include "abox_cloud_v4.h"
 #include "abox_mqtt_digest.h"
+#include "wing_controller.h"
 
 #define TIMESTAMP_DIGITS 16U
 #define CODE_DIGITS 4U
@@ -10,6 +11,11 @@
 #define LEGACY_REPLY_CAPACITY 256U
 
 _Static_assert(TIMESTAMP_DIGITS + CODE_DIGITS + 1U == MQTT_V4_REPLY_LENGTH, "V4 reply layout");
+
+uint16_t MQTT_V4_ReplyCode(uint16_t result)
+{
+    return result == WING_REQUEST_OBSTACLE ? 4003U : result;
+}
 
 const char* MQTT_V4_ReplyMessage(uint16_t code)
 {
@@ -19,6 +25,7 @@ const char* MQTT_V4_ReplyMessage(uint16_t code)
         case 4001U: return "invalid request";
         case 4002U: return "unsupported command";
         case 4003U: return "busy or trusted time unavailable";
+        case WING_REQUEST_OBSTACLE: return "超声波检测到障碍物，升降已拦截";
         case 4005U: return "request expired";
         case 4006U: return "requestId conflict";
         case 5002U: return "controller unavailable";
@@ -38,10 +45,11 @@ int MQTT_V4_ReplyEncode(char* out, size_t capacity, const char* id, const MqttV4
         if (!result || !cJSON_AddBoolToObject(result, "powerOutputOn", reply->power == POWER_ON))
         { cJSON_Delete(result); return 0; }
     }
-    const uint16_t code = ABoxCloudV4_Response(out, capacity, reply->timestamp, id, reply->code,
+    const uint16_t wire_code = MQTT_V4_ReplyCode(reply->code);
+    const uint16_t code = ABoxCloudV4_Response(out, capacity, reply->timestamp, id, wire_code,
                                              MQTT_V4_ReplyMessage(reply->code), result);
     cJSON_Delete(result);
-    return code == reply->code;
+    return code == wire_code;
 }
 
 static void write_hex(char* out, size_t width, uint64_t value)

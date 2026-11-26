@@ -4,6 +4,8 @@
 #include <string.h>
 
 static UltrasonicAlarm alarm;
+/* Autonomous reset requires a clear reading over the module's full range. */
+static UltrasonicAlarm reset_path;
 static volatile uint8_t ready;
 static volatile uint8_t stop_pending;
 static volatile uint8_t alarm_suppressed;
@@ -31,6 +33,7 @@ void UltrasonicBoard_Init(void)
     prestart_warning_started = 0U;
     alarm_held = 0U;
     UltrasonicAlarm_Init(&alarm);
+    UltrasonicAlarm_Init(&reset_path);
     memset(&diagnostics, 0, sizeof(diagnostics));
     ready = 1U;
     __set_PRIMASK(irq);
@@ -50,6 +53,7 @@ void UltrasonicBoard_ClearAlarmHold(void)
     uint32_t irq = __get_PRIMASK();
     __disable_irq();
     alarm_held = 0U;
+    prestart_warning_active = 0U;
     __set_PRIMASK(irq);
 }
 
@@ -96,6 +100,7 @@ void UltrasonicBoard_OnCanRx(CAN_HandleTypeDef* hcan)
                 header.IDE == CAN_ID_EXT, header.RTR == CAN_RTR_REMOTE, header.DLC, data))
             {
                 diagnostics.accepted++;
+                UltrasonicAlarm_ObserveResetPath(&reset_path, now, data);
                 diagnostics.last_valid_tick = now;
                 memcpy(diagnostics.last_valid_data, data, 8);
                 if (alarm.active && !alarm_suppressed) alarm_held = 1U;
@@ -140,8 +145,8 @@ uint8_t UltrasonicBoard_PathConfirmedClear(uint32_t now)
 {
     uint32_t irq = __get_PRIMASK();
     __disable_irq();
-    uint8_t clear = ready && alarm.seen && now - alarm.last_rx <= ULTRASONIC_FRESH_MS &&
-                    !UltrasonicAlarm_Update(&alarm, now) && !stop_pending;
+    uint8_t clear = ready && reset_path.seen && now - reset_path.last_rx <= ULTRASONIC_FRESH_MS &&
+                    !UltrasonicAlarm_Update(&reset_path, now) && !stop_pending;
     __set_PRIMASK(irq);
     return clear;
 }

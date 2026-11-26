@@ -19,6 +19,8 @@
 #define WING_ANTI_PINCH_BACKOFF_MM 20U
 #define WING_ANTI_PINCH_MOVE_TIMEOUT_MS 10000U
 #define WING_ULTRASONIC_ASCEND_SUPPRESS_MIN_MM 5U
+/* Product-local refusal reason. V4 encodes it as a 4003 protection gate. */
+#define WING_REQUEST_OBSTACLE 0xF003U
 #define WING_ULTRASONIC_SUPPRESS_MAX_MM 70U
 
 typedef enum

@@ -667,8 +667,31 @@ static void test_ultrasonic_cancels_queued_and_rejects_held_commands(void)
     reset_all();test_ultrasonic_blocked=1;
     request("during-sonar","ascend");
     assert(!g_tx_count && code()==4003 && test_ultrasonic_prestart_warnings==1);
+    assert(strstr(response, "超声波检测到障碍物") && !MQTT_V4_ControlPending());
+    for (unsigned i = 0; i < 12U; ++i)
+    {
+        char id[32];
+        snprintf(id, sizeof(id), "obstructed-%u", i);
+        request(id, "descend");
+        assert(code() == 4003 && strstr(response, "超声波检测到障碍物"));
+        assert(!g_tx_count && !MQTT_V4_ControlPending());
+    }
     test_ultrasonic_blocked=0;pump();
     assert(!g_tx_count); /* A rejected request is never queued for later movement. */
+    request("obstructed-11", "descend");
+    request("during-sonar", "ascend");
+    assert(!g_tx_count && strstr(response, "超声波检测到障碍物"));
+    request("fresh-after-clear", "ascend");
+    assert(count_command('R','D') == 1U && WingController_GetSnapshot()->can_session == WING_CAN_SESSION_PREFLIGHT);
+
+    reset_all(); ota_busy = 1U;
+    request("obstacle-at-dispatch", "ascend");
+    test_ultrasonic_blocked = 1U;
+    ota_busy = 0U; pump();
+    assert(!g_tx_count && code() == 4003 && strstr(response, "超声波检测到障碍物"));
+    test_ultrasonic_blocked = 0U; boot_storage();
+    request("obstacle-at-dispatch", "ascend");
+    assert(!g_tx_count && code() == 4003 && strstr(response, "超声波检测到障碍物"));
 }
 
 static void power_check_to_limits(uint16_t pos)

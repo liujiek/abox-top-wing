@@ -183,6 +183,7 @@ int main(void)
     UltrasonicAlarm_Init(&sonar);
     contact = GPIO_PIN_RESET;
     uint8_t distances[8] = {0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,30};
+    assert(UltrasonicAlarm_OnFrame(&sonar, 0U, WL300D_CAN_ID, 1U, 0U, 8U, distances));
     assert(UltrasonicAlarm_OnFrame(&sonar, 10U, WL300D_CAN_ID, 1U, 0U, 8U, distances));
     AntiPinchBoard_Tick(10U);
     assert(output == GPIO_PIN_SET && !AntiPinchBoard_TakeTrigger());
@@ -201,6 +202,7 @@ int main(void)
     AntiPinchBoard_Tick(1200U);
     AntiPinchBoard_Tick(1220U);
     distances[0] = 20;
+    UltrasonicAlarm_OnFrame(&sonar,1250U,WL300D_CAN_ID,1,0,8,distances);
     UltrasonicAlarm_OnFrame(&sonar,1300U,WL300D_CAN_ID,1,0,8,distances);
     AntiPinchBoard_Tick(2220U);
     assert(output == GPIO_PIN_SET); /* Sonar holds output after contact tail. */
@@ -257,6 +259,7 @@ int main(void)
     AntiPinchBoard_UpdateResetLamp(now + 3000U, 1U);
     AntiPinchBoard_Tick(now + 3100U);
     assert(output == GPIO_PIN_SET);
+    UltrasonicAlarm_OnFrame(&sonar,now + 5800U,WL300D_CAN_ID,1,0,8,distances);
     UltrasonicAlarm_OnFrame(&sonar,now + 5900U,WL300D_CAN_ID,1,0,8,distances);
     AntiPinchBoard_Tick(now + 6000U);
     assert(output == GPIO_PIN_SET);

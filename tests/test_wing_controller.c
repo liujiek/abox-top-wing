@@ -569,7 +569,7 @@ static void test_ultrasonic_stop_and_no_resume(void)
         assert(WingController_GetSnapshot()->can_session==WING_CAN_SESSION_IDLE_SILENT);
         unsigned before=g_tx_count;
         for(unsigned n=0;n<10;++n) WingController_Task(300+n*100);
-        assert(g_tx_count==before && WingController_Request(dir,"still-blocked")==4003);
+        assert(g_tx_count==before && WingController_Request(dir,"still-blocked")==WING_REQUEST_OBSTACLE);
         test_ultrasonic_blocked=0;
         WingController_Task(1500);
         assert(g_tx_count==before); /* Clearing does not resume or poll. */
@@ -585,8 +585,18 @@ static void test_ultrasonic_idle_is_alarm_only(void)
     test_ultrasonic_blocked = 1U;
     WingController_UltrasonicStop();
     assert(count_command('S', 'T') == 0U && test_ultrasonic_aborts == 0U);
-    assert(WingController_Request(WING_ACTION_ASCEND, "remote-blocked") == 4003U);
+    assert(WingController_Request(WING_ACTION_ASCEND, "remote-blocked") == WING_REQUEST_OBSTACLE);
     assert(test_ultrasonic_prestart_warnings == 1U && test_ultrasonic_prestart_tick == 0U);
+    assert(WingController_Request(WING_ACTION_STOP, "silence") == 0U);
+    assert(test_ultrasonic_hold_clears == 1U && count_command('S', 'T') == 1U);
+    WingController_Task(1U);
+    assert(test_ultrasonic_suppressed);
+    ack(WING_ACTION_STOP, 2U);
+    assert(WingController_GetSnapshot()->can_session == WING_CAN_SESSION_STOPPING);
+    status(80, 0, 3U);
+    assert(WingController_GetSnapshot()->can_session == WING_CAN_SESSION_IDLE_SILENT);
+    assert(WingController_Request(WING_ACTION_DESCEND, "still-obstructed") == WING_REQUEST_OBSTACLE);
+    assert(!count_command('U', 'P') && !count_command('D', 'N'));
 
     reset_controller();
     start_running(WING_ACTION_ASCEND, "remote-sonar", 80U);
@@ -733,7 +743,7 @@ static void test_ultrasonic_near_retraction_suppression(void)
     status(20U, 0U, 358U);
     assert(test_ultrasonic_suppressed);
     assert(WingController_IsUltrasonicBlocked());
-    assert(WingController_Request(WING_ACTION_ASCEND, "idle-blocked") == 4003U);
+    assert(WingController_Request(WING_ACTION_ASCEND, "idle-blocked") == WING_REQUEST_OBSTACLE);
 }
 
 static void idle_poll(uint32_t tick, uint8_t pending)
@@ -930,7 +940,7 @@ static void test_sonar_during_auto_reset(void)
     idle_poll(3870,0); status(0,0,3871);
     assert(!test_reset_lamp_moving && test_reset_lamp_tick == 3871);
     assert(!WingController_AutoResetActive() && !reset_errors);
-    assert(WingController_Request(WING_ACTION_ASCEND,"obstacle-after-reset") == 4003U);
+    assert(WingController_Request(WING_ACTION_ASCEND,"obstacle-after-reset") == WING_REQUEST_OBSTACLE);
     test_ultrasonic_blocked = 0;
     idle_attempt(7000,1);
     assert(!test_reset_marker);
@@ -944,7 +954,7 @@ static void test_sonar_during_auto_reset(void)
     receive(rs_rejected,14257);
     assert(!test_reset_lamp_moving && test_reset_lamp_tick == 14257);
     assert(!WingController_AutoResetActive() && reset_errors);
-    assert(WingController_Request(WING_ACTION_ASCEND,"obstacle-after-reject") == 4003U);
+    assert(WingController_Request(WING_ACTION_ASCEND,"obstacle-after-reject") == WING_REQUEST_OBSTACLE);
 
     reset_controller();
     idle_attempt(3000,251);

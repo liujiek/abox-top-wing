@@ -102,7 +102,8 @@ static int encode_response(const char* id, uint16_t code, uint64_t timestamp, ui
 
 static uint8_t respond(const char* id, uint16_t code, uint64_t timestamp, uint8_t sync, PowerAction power)
 {
-    return encode_response(id, code, timestamp, sync, power) && MQTT_App_QueuePublicResponse(response_buf, id, code);
+    return encode_response(id, code, timestamp, sync, power) &&
+           MQTT_App_QueuePublicResponse(response_buf, id, MQTT_V4_ReplyCode(code));
 }
 
 static int replay_response(const char* record, size_t length, const char* id)
@@ -110,7 +111,7 @@ static int replay_response(const char* record, size_t length, const char* id)
     MqttV4Reply reply;
     return MQTT_V4_ReplyUnpack(&reply, record, length) &&
            MQTT_V4_ReplyEncode(response_buf, sizeof(response_buf), id, &reply) &&
-           MQTT_App_QueuePublicResponse(response_buf, id, reply.code);
+           MQTT_App_QueuePublicResponse(response_buf, id, MQTT_V4_ReplyCode(reply.code));
 }
 
 static Request* find(const char* id)
@@ -211,8 +212,7 @@ void MQTT_V4_Task(void)
             else if (code == 200U)
             {
                 if (power_off_pending() ||
-                    WingController_GetSnapshot()->can_session != WING_CAN_SESSION_IDLE_SILENT ||
-                    WingController_RejectRemoteStartForUltrasonic()) code = 4003U;
+                    WingController_GetSnapshot()->can_session != WING_CAN_SESSION_IDLE_SILENT) code = 4003U;
                 else code = WingController_Request(r->action, r->id);
             }
             if (code) complete(r, code);
@@ -362,13 +362,18 @@ void MQTT_V4_HandleRequest(const char* text)
     else
     {
         if (power == POWER_NONE && (power_off_pending() || !WingPower_IsOn() ||
-            WingController_GetSnapshot()->can_session != WING_CAN_SESSION_IDLE_SILENT ||
-            WingController_RejectRemoteStartForUltrasonic()))
+            WingController_GetSnapshot()->can_session != WING_CAN_SESSION_IDLE_SILENT))
         { complete(r, 4003U); goto done; }
+        uint8_t obstacle = power == POWER_NONE && WingController_RejectRemoteStartForUltrasonic();
+        if (obstacle && r != &requests[ORDINARY_CACHE_COUNT - 1U])
+        { complete(r, WING_REQUEST_OBSTACLE); goto done; }
+        /* Keep the last ordinary slot available after a burst of refused
+         * starts. Journal its terminal refusal without ever arming dispatch. */
         code = ABoxMqttIdem_Begin(cache, key, request.digest, request.expires_at, &clock, &index);
         if (code != 200U) { complete(r, code); goto done; }
         r->store_slot = (int8_t)index;
-        r->awaiting_dispatch = 1U;
+        if (obstacle) complete(r, WING_REQUEST_OBSTACLE);
+        else r->awaiting_dispatch = 1U;
     }
     goto done;
 error:

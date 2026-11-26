@@ -47,6 +47,8 @@ typedef struct
     uint8_t conflict_samples;
     uint8_t direction_result_sent;
     uint8_t stop_command_sent;
+    uint8_t quiet_idle_stop;
+    uint8_t silence_on_confirm;
     uint8_t power_off_check;
     char direction_request_id[65];
     char stop_request_id[65];
@@ -152,7 +154,7 @@ static void sync_ultrasonic_suppression(void)
     uint8_t near = ultrasonic_near_retraction_suppressed();
     if (near) UltrasonicBoard_ClearAlarmHold();
     UltrasonicBoard_SetAlarmSuppressed((uint8_t)(WingController_AutoResetActive() || g_session.state == SESSION_IDLE ||
-                                                g_session.power_off_check || near));
+                                                g_session.quiet_idle_stop || g_session.power_off_check || near));
 }
 
 static uint8_t pinch_backoff_active(void)
@@ -390,7 +392,7 @@ uint8_t WingController_RejectRemoteStartForUltrasonic(void)
         rejected = 1U;
     }
     __set_PRIMASK(irq);
-    if (rejected) APP_LOGW("SONAR", "prestart obstacle: 2s warning, movement rejected");
+    if (rejected) APP_LOGW("SONAR", "prestart obstacle: movement rejected");
     return rejected;
 }
 
@@ -443,6 +445,7 @@ static uint8_t enforce_ultrasonic_stop(uint32_t now)
 static void finish_stop(void)
 {
     PinchPhase pinch_phase = g_pinch.phase;
+    uint8_t silence_sonar = g_session.silence_on_confirm;
     uint16_t stopped_mm = g_state.snapshot.position_mm;
     WingControlOwner owner = g_session.stop_cause == STOP_CONFLICT ?
                              WING_CONTROL_OWNER_LOCAL_SUSPECTED : WING_CONTROL_OWNER_NONE;
@@ -463,6 +466,7 @@ static void finish_stop(void)
     g_have_confirmed_stop = g_state.snapshot.status_fresh && !g_state.snapshot.fault_code;
     g_confirmed_stop = g_state.snapshot;
     finish_idle(owner);
+    if (silence_sonar) UltrasonicBoard_ClearAlarmHold();
     if (pinch_phase == PINCH_STOPPING)
     {
         g_pinch.start_mm = stopped_mm;
@@ -653,6 +657,14 @@ static uint16_t controller_request(WingAction action, const char* request_id, ui
     if (action == WING_ACTION_STOP)
     {
         if (g_session.power_off_check) fail_direction(4003U, WING_CONTROL_OWNER_NONE);
+        g_session.silence_on_confirm = 1U;
+        if (g_session.state == SESSION_IDLE)
+        {
+            /* A rejected start owns no motion. Keep idle sonar suppression
+             * through ST/RD so incoming obstacle frames cannot rearm the lamp. */
+            g_session.quiet_idle_stop = 1U;
+            UltrasonicBoard_ClearAlarmHold();
+        }
         /* An explicit operator stop cancels any automatic upward continuation. */
         if (g_pinch.phase != PINCH_NONE) g_pinch.phase = PINCH_FINAL_STOP;
         /* Idle also needs feedback confirmation for an explicit stop. */
@@ -664,7 +676,7 @@ static uint16_t controller_request(WingAction action, const char* request_id, ui
     if (g_pinch.phase != PINCH_NONE || g_pinch_pressed) return 4003U;
     code = WingState_AdmissionCode(&g_state, action);
     if (code) return code;
-    if (WingController_RejectRemoteStartForUltrasonic()) return 4003U;
+    if (WingController_RejectRemoteStartForUltrasonic()) return WING_REQUEST_OBSTACLE;
     clear_session();
     g_session.state = SESSION_WAIT_RD1;
     g_session.action = action;

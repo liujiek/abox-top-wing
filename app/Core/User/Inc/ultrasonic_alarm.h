@@ -5,6 +5,8 @@
 #define WL300D_CAN_ID 0x18EC0057U
 #endif
 #define ULTRASONIC_CLEAR_MS 2000U
+#define ULTRASONIC_ALARM_MAX_CM 150U
+#define WL300D_MAX_DISTANCE_CM 254U
 #define ULTRASONIC_FRESH_MS 500U
 #define ULTRASONIC_SILENCE_MS 2000U
 #define ULTRASONIC_PRESTART_WARNING_MS 2000U
@@ -16,4 +18,6 @@ void UltrasonicAlarm_Init(UltrasonicAlarm* state);
 uint8_t UltrasonicAlarm_OnFrame(UltrasonicAlarm* state, uint32_t now,
     uint32_t id, uint8_t extended, uint8_t remote, uint8_t length, const uint8_t* data);
 uint8_t UltrasonicAlarm_Update(UltrasonicAlarm* state, uint32_t now);
+/* The reset interlock uses every valid distance in the current validated frame. */
+void UltrasonicAlarm_ObserveResetPath(UltrasonicAlarm* state, uint32_t now, const uint8_t data[8]);
 #endif
